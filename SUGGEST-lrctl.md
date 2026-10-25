@@ -1,7 +1,5 @@
 # Proposition : `lrctl`, le client en ligne de commande de local-registry
 
-> Statut : **à valider**. Je code seulement après validation des points de la [section 8](#8-points-à-valider).
-
 ## Objectif
 
 Remplacer `scripts/upload.sh` et `scripts/publish-to-local-registry.sh` par un client Go, et couvrir aussi la consommation : chercher un produit, lire une version, télécharger et vérifier ses fichiers.
@@ -144,4 +142,3 @@ lrctl download billing-agent latest --extract -d /opt/billing-agent
 | 4 | `upload.sh` | **A** garder au moins une version, marqué comme déprécié, avec un message qui renvoie vers `lrctl` · **B** retirer tout de suite | **A** |
 | 5 | Périmètre de la première version | **A** `publish`, `validate`, `ping`, `version` · **B** tout, `download` et `products` compris | **A**, puis `download` ; `products` suit la recherche de `SUGGEST.md` |
 
-Réponse attendue sur le modèle « 1A, 2A, 3A, 4A, 5A ». Je code seulement après validation.
