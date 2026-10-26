@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	AppHomeDir        = "$HOME/.local-registry"
+	AppHomeDir        = "$HOME/.lr"
 	AppUser           = "local-registry"
 	AppConfigFileName = AppHomeDir + "/config"
 	envPrefix         = "LOCAL_REGISTRY"
@@ -27,6 +27,26 @@ var (
 	Vconfig   = viper.New()
 	AppConfig AppUntypedConfig
 )
+
+var (
+	configSearchDirs = []string{
+		"/etc/" + build.GetBuildInfo().Name,
+		AppHomeDir,
+		".",
+	}
+
+	configFileName = []string{
+		"config",
+		"config.yaml",
+		"config.yml",
+	}
+)
+
+var nestedFlags = map[string]string{
+	"server.url":          "server-url",
+	"server.upload-token": "server-upload-token",
+	"server.ca-file":      "server-ca-file",
+}
 
 type OutputType = string
 
@@ -44,71 +64,29 @@ func usagef(format string, args ...any) error {
 	return usageError{fmt.Errorf(format, args)}
 }
 
+func findDefaultConfig() string {
+	for _, dir := range configSearchDirs {
+		for _, name := range configFileName {
+			p := filepath.Join(dir, name)
+			if info, err := os.Stat(p); err == nil && !info.IsDir() {
+				return p
+			}
+		}
+	}
+	return ""
+}
+
 func InitConfig() {
-	Vconfig.SetConfigName("config")
-	// Vconfig.SetConfigType("toml")
-	Vconfig.AddConfigPath("/etc/" + build.GetBuildInfo().Name + "/")
-	Vconfig.AddConfigPath(AppHomeDir)
-	Vconfig.AddConfigPath(".")
-	Vconfig.SetEnvPrefix(strings.ToUpper(AppUser))
+	// Vconfig.SetConfigName("config")
+	//// Vconfig.SetConfigType("toml")
+	// Vconfig.AddConfigPath("/etc/" + build.GetBuildInfo().Name + "/")
+	/// Vconfig.AddConfigPath(AppHomeDir)
+	// Vconfig.AddConfigPath(".")
+	Vconfig.SetEnvPrefix(envPrefix)
 	Vconfig.SetEnvKeyReplacer(
 		strings.NewReplacer(".", "_"),
 	)
 	Vconfig.AutomaticEnv()
-}
-
-func LoadAppConfig() (AppUntypedConfig, error) {
-
-	serverEnvs := []string{
-		"url",
-		"upload_token",
-		"ca_file",
-	}
-
-	for _, s := range serverEnvs {
-		replace := strings.ReplaceAll(s, ".", "_")
-		_ = Vconfig.BindEnv(fmt.Sprintf("server.%s", s), fmt.Sprintf("%s_%s",
-			strings.ToUpper(AppUser), strings.ToUpper(replace)))
-	}
-
-	var cfg AppUntypedConfig
-
-	if err := Vconfig.Unmarshal(&cfg); err != nil {
-		return cfg, usagef("decode configuration: maybe malformatted: %w", err)
-	}
-
-	AppConfig = cfg
-
-	if strings.TrimSpace(cfg.Server.BaseUrl) == "" {
-		return cfg, fmt.Errorf("invalid server.base-url: %s", cfg.Server.BaseUrl)
-	}
-	if strings.TrimSpace(cfg.Server.UploadToken) == "" {
-		slog.With("config").Warn("server.upload-token is not set, so lrclt will read only")
-	}
-
-	return cfg, nil
-}
-
-func LoadConfigFile() error {
-	cfgFile := Vconfig.GetString("config")
-
-	if cfgFile != "" {
-		Vconfig.SetConfigFile(cfgFile)
-		if err := Vconfig.ReadInConfig(); err != nil {
-			return fmt.Errorf("error reading config file: %w", err)
-		}
-		return nil
-	}
-
-	if err := Vconfig.ReadInConfig(); err != nil {
-		if _, ok := errors.AsType[viper.ConfigFileNotFoundError](err); ok {
-			return nil
-		}
-
-		return fmt.Errorf("error reading config: %w", err)
-	}
-
-	return nil
 }
 
 func SetDefaults() {
@@ -123,41 +101,74 @@ func SetDefaults() {
 // LoadConfig resolves and validates the settings: flags, then LOCAL_REGISTRY_* variables,
 // then the --config file, then defaults. Any problem is a usageError.
 func LoadConfig(fs *pflag.FlagSet, stderr io.Writer) error {
-	Vconfig.SetConfigName("config")
-	// Vconfig.SetConfigType("toml")
-	Vconfig.AddConfigPath("/etc/" + build.GetBuildInfo().Name + "/")
-	Vconfig.AddConfigPath(AppHomeDir)
-	Vconfig.AddConfigPath(".")
+	// Vconfig.SetConfigName("config")
+	//// Vconfig.SetConfigType("toml")
+	// Vconfig.AddConfigPath("/etc/" + build.GetBuildInfo().Name + "/")
+	/// Vconfig.AddConfigPath(AppHomeDir)
+	// Vconfig.AddConfigPath(".")
 	Vconfig.SetEnvPrefix(envPrefix)
-	Vconfig.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+	Vconfig.SetEnvKeyReplacer(strings.NewReplacer("-", "_", ".", "_"))
 	Vconfig.AutomaticEnv()
 	if err := Vconfig.BindPFlags(fs); err != nil {
 		return err
 	}
 
-	file, err := ExpandPath(Vconfig.GetString("config"))
+	Vconfig.MustBindEnv("server.url", fmt.Sprintf("%s_%s", envPrefix, "URL"))
+	Vconfig.MustBindEnv("server.upload-token", fmt.Sprintf("%s_%s", envPrefix, "UPLOAD_TOKEN"))
+	Vconfig.MustBindEnv("server.ca-file", fmt.Sprintf("%s_%s", envPrefix, "CA_FILE"))
+
+	explicitePath, err := ExpandPath(Vconfig.GetString("config"))
 	if err != nil {
 		return usagef("config: %v", err)
 	}
+
+	var file string
+
+	if explicitePath != "" {
+		file = explicitePath
+		info, err := os.Stat(file)
+		if err != nil {
+			return usagef("config file %s: %v", file, err)
+		}
+
+		if info.IsDir() {
+			return usagef("config file %s: is a directory", file)
+		}
+	} else {
+		file = findDefaultConfig()
+	}
+
 	if file != "" {
 		Vconfig.SetConfigFile(file)
 		Vconfig.SetConfigType("yaml")
 		if err := Vconfig.ReadInConfig(); err != nil {
 			return usagef("config file %s: %v", file, err)
 		}
-		known := fileKeys(fs)
-		for _, k := range Vconfig.AllKeys() {
-			if Vconfig.InConfig(k) && !slices.Contains(known, k) {
-				return usagef("config file %s: unknown setting %q", file, k)
+
+		if used := Vconfig.ConfigFileUsed(); used != "" {
+			known := fileKeys(fs)
+			for _, k := range Vconfig.AllKeys() {
+				if Vconfig.InConfig(k) && !slices.Contains(known, k) {
+					return usagef("config file %s: unknown setting %q", file, k)
+				}
 			}
-		}
-		if Vconfig.InConfig("server.upload-token") {
-			if info, err := os.Stat(file); err == nil && info.Mode().Perm()&0o077 != 0 {
-				_, _ = fmt.Fprintf(stderr, "warning: %s holds the upload token but is readable by other users (mode %v): chmod 600 %s\n",
-					file, info.Mode().Perm(), file)
+			if Vconfig.InConfig("server.upload-token") {
+				if info, err := os.Stat(file); err == nil && info.Mode().Perm()&0o077 != 0 {
+					_, _ = fmt.Fprintf(stderr, "warning: %s holds the upload token but is readable by other users (mode %v): chmod 600 %s\n",
+						file, info.Mode().Perm(), file)
+				}
 			}
 		}
 	}
+
+	/*if file != "" {
+		Vconfig.SetConfigFile(file)
+		Vconfig.SetConfigType("yaml")
+		if err := Vconfig.ReadInConfig(); err != nil {
+			return usagef("config file %s: %v", file, err)
+		}
+
+	}*/
 
 	// Typed reads that fail loudly: viper's plain getters turn "abc" into 0 without a word.
 	var errs []error
@@ -191,9 +202,15 @@ func LoadConfig(fs *pflag.FlagSet, stderr io.Writer) error {
 		}
 		return p
 	}
-	AppConfig.Server.BaseUrl = path("server-url")
-	AppConfig.Server.UploadToken = path("server-token")
-	AppConfig.Server.CaFile = path("ca-file")
+
+	fmt.Println(":::::::::::::::::::::::::::::::::::")
+	fmt.Println(path("server.upload-token"))
+	fmt.Println(path("server-upload-token"))
+	fmt.Println(":::::::::::::::::::::::::::::::::::")
+
+	AppConfig.Server.BaseUrl = path("server.url")
+	AppConfig.Server.UploadToken = path("server.upload-token")
+	AppConfig.Server.CaFile = path("server.ca-file")
 	AppConfig.Output = str("output")
 	AppConfig.NoColor = boolean("no-color")
 	AppConfig.Verbose = boolean("verbose")
@@ -208,22 +225,8 @@ func LoadConfig(fs *pflag.FlagSet, stderr io.Writer) error {
 
 // validate checks the settings and completes the derived ones (absolute paths, audit log).
 func validate(cfg AppUntypedConfig) error {
-	isValidUrl := func(rawURL string) bool {
-		u, err := url.ParseRequestURI(rawURL)
-		ors := err != nil ||
-			u.Scheme != "http" && u.Scheme != "https" ||
-			u.Hostname() == "" ||
-			strings.ContainsAny(rawURL, " \t\r\n")
-		if ors {
-			return false
-		}
-		return true
-	}
-
-	if !isValidUrl(cfg.Server.BaseUrl) {
-		return usagef("server-url must be valid url: e.g: https://local-registry.corp.org")
-	}
-	if !slices.Contains([]OutputType{OText, OJson}, cfg.Output) {
+	fmt.Println(cfg)
+	if strings.TrimSpace(cfg.Output) != "" && !slices.Contains([]OutputType{OText, OJson}, cfg.Output) {
 		return usagef("output must be one of 'text' and 'json'")
 	}
 	for _, l := range []struct {
@@ -240,7 +243,7 @@ func validate(cfg AppUntypedConfig) error {
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
 			u.User != nil || u.RawQuery != "" || strings.HasSuffix(cfg.Server.BaseUrl, "?") {
 			return usagef(
-				"public-url %q must be an http or https URL with no user, query or fragment,"+
+				"server.url %s must be an http or https URL with no user, query or fragment,"+
 					" such as https://registry.example.com", cfg.Server.BaseUrl)
 		}
 		cfg.Server.BaseUrl = strings.TrimRight(cfg.Server.BaseUrl, "/")
@@ -252,38 +255,56 @@ func Source(fs *pflag.FlagSet, key string) string {
 	if f := fs.Lookup(key); f != nil && f.Changed {
 		return "flag"
 	}
-	if _, ok := os.LookupEnv(envName(key)); ok {
-		return "env " + envName(key)
+
+	if _, ok := os.LookupEnv(envName(strings.TrimPrefix(key, "server."))); ok {
+		return "env " + envName(strings.TrimPrefix(key, "server."))
 	}
 	if Vconfig.InConfig(key) {
 		return "config file"
 	}
+
 	return "default"
 }
 
 func AddFlags(fs *pflag.FlagSet) {
 	fs.String("config", "", "Yaml file configuration")
-	fs.String("server.url", "", "Local Registry Server Base URL")
-	fs.String("server.upload-token", "", "Local Registry Token for secure upload")
+	// fs.String("server.url", "", "Local Registry Server Base URL")
+	// fs.String("server.upload-token", "", "Local Registry Token for secure upload")
+	// fs.String("server.ca-file", "", "Local Registry CA file for internal HTTPS")
+	fs.String("server-url", "", "Local Registry Server Base URL")
+	fs.String("server-upload-token", "", "Local Registry Token for secure upload")
+	fs.String("server-ca-file", "", "Local Registry CA file for internal HTTPS")
+
 	fs.Bool("no-color", false, "Output without color")
 	fs.Int("retries", 3, "News attempts against network 5xx error (3 by default)")
 	fs.Int("timeout", 300, "Timeout delay(5min default)")
+
+	for k, v := range nestedFlags {
+		if err := Vconfig.BindPFlag(k, fs.Lookup(v)); err != nil {
+			panic(err)
+		}
+		fs.Lookup(v)
+	}
 
 	fs.SortFlags = false
 	fs.VisitAll(func(flag *pflag.Flag) {
 		if slices.Contains([]string{
 			"config",
-			"server.url",
-			"server.upload-token",
+			"server-url",
+			"server-upload-token",
+			"server-ca-file",
 		}, flag.Name) {
-			s := strings.Trim(flag.Name, "server.")
-			flag.Usage += fmt.Sprintf("env[%s]", envName(s))
+			s := strings.TrimPrefix(flag.Name, "server-")
+			flag.Usage += fmt.Sprintf(" - env[%s]", envName(s))
 		}
 	})
 }
 
 func envName(key string) string {
-	return envPrefix + "_" + strings.ToUpper(strings.ReplaceAll(key, "-", "_"))
+	return envPrefix + "_" + strings.ToUpper(
+		strings.NewReplacer("-", "_", ".", "_").
+			Replace(key),
+	)
 }
 
 func fileKeys(fs *pflag.FlagSet) (keys []string) {
@@ -292,6 +313,9 @@ func fileKeys(fs *pflag.FlagSet) (keys []string) {
 			keys = append(keys, f.Name)
 		}
 	})
+	for k := range nestedFlags {
+		keys = append(keys, k)
+	}
 	return keys
 }
 

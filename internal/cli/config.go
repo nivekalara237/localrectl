@@ -27,7 +27,7 @@ func noArgs(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func NewConfigCommand() *cobra.Command {
+func newConfigCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Print the effective configuration and where each value comes from",
@@ -39,15 +39,15 @@ never printed: only whether it is set and its token_id, as written in the audit 
   LOCAL_REGISTRY_CA_FILE=./root.cert local-registry config`,
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			err := config.LoadConfig(cmd.Flags(), cmd.ErrOrStderr())
+			/*err := config.LoadConfig(cmd.PersistentFlags(), cmd.ErrOrStderr())
 			if err != nil {
 				return err
-			}
+			}*/
+			fmt.Println(",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,")
 			printConfig(cmd.OutOrStdout(), config.Vconfig, cmd.Flags(), config.AppConfig)
 			return nil
 		},
 	}
-	config.AddFlags(cmd.Flags())
 
 	return cmd
 }
@@ -61,8 +61,9 @@ func printConfig(w io.Writer, v *viper.Viper, fs *pflag.FlagSet, cfg config.AppU
 
 	rows := [][2]string{
 		{"config", configPath(v)},
-		{"server-url", cfg.Server.BaseUrl},
-		{"server-token", "****"},
+		{"server.url", cfg.Server.BaseUrl},
+		{"server.upload-token", cfg.Server.UploadToken[:7] + "*****"},
+		{"server.ca-file", cfg.Server.CaFile},
 		{"output", fmt.Sprint(cfg.Output)},
 		{"retries", fmt.Sprint(cfg.Retries)},
 		{"timeout", fmt.Sprint(cfg.Timeout)},
