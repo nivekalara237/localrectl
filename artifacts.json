@@ -1,0 +1,14 @@
+{
+  "name": "myapp_1.0.0_linux_amd64.tar.gz",
+  "path": "dist/myapp_1.0.0_linux_amd64.tar.gz",
+  "goos": "linux",
+  "goarch": "amd64",
+  "goamd64": "v1",
+  "type": "Archive",
+  "extra": {
+    "Binaries": ["myapp"],
+    "Checksum": "sha256:abc123...",
+    "Format": "tar.gz",
+    "ID": "default"
+  }
+}

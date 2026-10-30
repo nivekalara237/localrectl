@@ -1,4 +1,4 @@
-apiVersion: local-registry/v1beta1
+apiVersion: local-registry/v1
 displayName: Hello
 description: A first product, to try local-registry.
 keywords:
@@ -8,25 +8,6 @@ keywords:
   - r
   - t
   - tfg
-  - s
-  - c
-  - vx
-  - ba
-  - de
-  - z
-  - sd
-  - a
-  - x
-  - b
-  - n
-  - l
-  - mm
-  - tt
-  - de
-  - cv
-  - bbb
-  - nnn
-  - de
   - er
   - fg
   - se
@@ -40,6 +21,4 @@ owners:
   - name: kevin
     email: kevin@nivekaa.com
   - email: cedric@nivekaa.com
-    nickname: cedric
-  - name: john
-    email: johny
+    name: cedric

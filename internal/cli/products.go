@@ -19,7 +19,7 @@ func newProductsCommand() *cobra.Command {
 		Short: "Get details about a specific product",
 		Example: `lrctl products validate /path/to/registry.yaml \
 						--product-name=gitlab-plugin \
-						--artifacts=/path/to/artifacts.json
+						--Artifacts=/path/to/Artifacts.json
 		`,
 	}
 }

@@ -1,0 +1,6 @@
+server:
+  url: https://localhost:8077
+  upload-token: 1234567890
+  ca-file: ca.cert
+timeout: 600
+retries: 3
