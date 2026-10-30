@@ -7,6 +7,7 @@ type AppUntypedConfig struct {
 	Verbose bool       `json:"verbose" yaml:"verbose"`
 	NoColor bool       `json:"no-color" yaml:"no-color"`
 	Output  string     `json:"output" yaml:"output"`
+	Quiet   bool       `json:"quiet" yaml:"quiet"`
 }
 
 type ServerConf struct {

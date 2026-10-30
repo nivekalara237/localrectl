@@ -2,8 +2,10 @@ package cli
 
 import (
 	"fmt"
+	"io"
 
 	"github.com/nivekalara237/localrectl/internal/build"
+	"github.com/nivekalara237/localrectl/internal/logging"
 	"github.com/spf13/cobra"
 )
 
@@ -14,8 +16,13 @@ func newVersionCommand() *cobra.Command {
 			"v",
 		},
 		Short: "Get Version",
-		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println(build.GetBuildInfo().ToString())
+		Args:  noArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			info := build.GetBuildInfo()
+			return logging.From(cmd.Context()).Result(info, func(w io.Writer) error {
+				_, err := fmt.Fprintln(w, info.ToString())
+				return err
+			})
 		},
 	}
 }

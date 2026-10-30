@@ -13,13 +13,13 @@ var (
 )
 
 type Info struct {
-	Version  string
-	Commit   string
-	Date     string
-	Dirty    bool
-	GoVer    string
-	Platform string
-	Name     string
+	Version  string `json:"version"`
+	Commit   string `json:"commit"`
+	Date     string `json:"date"`
+	Dirty    bool   `json:"dirty"`
+	GoVer    string `json:"go_version"`
+	Platform string `json:"platform"`
+	Name     string `json:"name"`
 }
 
 func GetBuildInfo() Info {

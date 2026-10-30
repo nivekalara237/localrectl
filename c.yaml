@@ -1,0 +1,6 @@
+server:
+  url: https://registryyy.corp.org:8089
+  upload-token: "8888800000000000000000000001111111111188888888888888"
+  ca-file: "/usr/share/certs/caroot.cert"
+timeout: 5400
+retries: 5

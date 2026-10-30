@@ -4,23 +4,49 @@ import (
 	"fmt"
 
 	"github.com/nivekalara237/localrectl/config"
+	"github.com/nivekalara237/localrectl/internal/logging"
 	"github.com/spf13/cobra"
 )
 
 func NewRootCommand() *cobra.Command {
 	root := &cobra.Command{
-		Use:          "lrctl",
-		SilenceUsage: false,
+		Use:           "lrctl",
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			err := config.LoadConfig(cmd.PersistentFlags(), cmd.ErrOrStderr())
-			fmt.Println("!!!!!!!!!!!!!!!!!")
+			return nil
+		},
+		// The Printer is stored even when the configuration is refused, so that main prints the
+		// error in the format asked for.
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			var notes logging.Notes
+			cfg, err := config.LoadConfig(cmd.Flags(), &notes)
+
+			p := logging.NewPrinter(cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg.OutputOptions())
+			ctx := logging.With(cmd.Context(), p)
+			if err == nil {
+				ctx = config.With(ctx, cfg)
+			}
+			cmd.SetContext(ctx)
+			notes.Flush(p.Logger())
 			return err
 		},
 	}
+	// Only a flag error points to --help: the whole usage would hide the error, and break -o json.
+	root.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
+		return config.Usage(fmt.Errorf("%w (see '%s --help')", err, c.CommandPath()))
+	})
 
-	root.AddCommand(newVersionCommand(), newConfigCommand())
+	root.AddCommand(
+		newVersionCommand(),
+		newConfigCommand(),
+		newPingCommand(),
+		newValidateProductCommand(),
+	)
 
 	config.AddFlags(root.PersistentFlags())
+	logging.AddArgs(root.PersistentFlags())
+	logging.AddLogArgs(root.PersistentFlags())
 
 	return root
 }
