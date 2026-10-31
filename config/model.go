@@ -1,13 +1,14 @@
 package config
 
 type AppUntypedConfig struct {
-	Server  ServerConf `json:"server" yaml:"server"`
-	Timeout int        `json:"timeout" yaml:"timeout"`
-	Retries int        `json:"retries" yaml:"retries"`
-	Verbose bool       `json:"verbose" yaml:"verbose"`
-	NoColor bool       `json:"no-color" yaml:"no-color"`
-	Output  string     `json:"output" yaml:"output"`
-	Quiet   bool       `json:"quiet" yaml:"quiet"`
+	Server   ServerConf `json:"server" yaml:"server"`
+	Timeout  int        `json:"timeout" yaml:"timeout"`
+	Retries  int        `json:"retries" yaml:"retries"`
+	Verbose  bool       `json:"verbose" yaml:"verbose"`
+	NoColor  bool       `json:"no-color" yaml:"no-color"`
+	Output   string     `json:"output" yaml:"output"`
+	Quiet    bool       `json:"quiet" yaml:"quiet"`
+	ExitCode int        `json:"exit-code" yaml:"exit-code"`
 }
 
 type ServerConf struct {

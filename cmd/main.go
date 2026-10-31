@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 
-	"github.com/nivekalara237/localrectl/config"
 	"github.com/nivekalara237/localrectl/internal/cli"
 	"github.com/nivekalara237/localrectl/internal/logging"
 	"github.com/spf13/cobra"
@@ -18,12 +17,8 @@ func init() {
 
 func main() {
 	cmd, err := rootCmd.ExecuteC()
-	if err == nil {
-		return
+	if err != nil {
+		logging.From(cmd.Context()).Error(err)
 	}
-	logging.From(cmd.Context()).Error(err)
-	if config.IsUsageError(err) {
-		os.Exit(2)
-	}
-	os.Exit(1)
+	os.Exit(cli.ExitCode(cmd, err))
 }

@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/artifacts.schema.json",
+  "title": "Release artifacts manifest",
+  "description": "List of artifacts produced by a release build, with platform information, type and additional metadata.",
+  "type": "array",
+  "items": { "$ref": "#/$defs/Artifact" },
+  "$defs": {
+    "Artifact": {
+      "type": "object",
+      "description": "A single release artifact.",
+      "additionalProperties": true,
+      "properties": {
+        "name":      { "type": "string", "description": "Artifact file name, without leading or trailing whitespace." },
+        "path":      { "type": "string", "description": "Artifact location, using '/' as separator. Relative to the working directory when possible; container image references are kept as-is." },
+        "goos":      { "type": "string", "description": "Target operating system.", "examples": ["linux", "darwin", "windows"] },
+        "goarch":    { "type": "string", "description": "Target CPU architecture.", "examples": ["amd64", "arm64", "386"] },
+        "goamd64":   { "type": "string", "description": "amd64 microarchitecture level.", "examples": ["v1", "v2", "v3", "v4"] },
+        "go386":     { "type": "string", "description": "386 floating-point mode.", "examples": ["sse2", "softfloat"] },
+        "goarm":     { "type": "string", "description": "ARM version.", "examples": ["6", "7"] },
+        "goarm64":   { "type": "string", "description": "ARM64 version." },
+        "gomips":    { "type": "string", "description": "MIPS floating-point mode.", "examples": ["hardfloat", "softfloat"] },
+        "goppc64":   { "type": "string", "description": "PPC64 version." },
+        "goriscv64": { "type": "string", "description": "RISC-V 64 version." },
+        "target":    { "type": "string", "description": "Full build target.", "examples": ["linux_amd64_v1"] },
+        "internal_type": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Numeric type identifier. Not stable across versions; use 'type' instead."
+        },
+        "type":  { "$ref": "#/$defs/ArtifactType" },
+        "extra": { "$ref": "#/$defs/Extra" }
+      },
+      "required": ["name", "path", "type"]
+    },
+
+    "ArtifactType": {
+      "type": "string",
+      "description": "Human-readable artifact type. Several internal kinds may map to the same value (e.g. all binary variants are reported as 'Binary'). The list is open: unknown values must be accepted.",
+      "anyOf": [
+        {
+          "enum": [
+            "Archive", "Binary", "File", "Linux Package", "MSIX", "Snap",
+            "Docker Image", "Published Docker Image", "Docker Manifest",
+            "Checksum", "Signature", "Certificate", "Source",
+            "Homebrew Formula", "Homebrew Cask", "Krew Plugin Manifest",
+            "Scoop Manifest", "SBOM", "PKGBUILD", "SRCINFO", "Chocolatey",
+            "C Header", "C Archive Library", "C Shared Library",
+            "Winget Manifest", "Nixpkg", "Wheel", "Source Dist",
+            "Makeself Package", "App Bundle", "DMG", "MacOS Package",
+            "MSI", "NSIS", "NPM Package", "Flatpak", "Source RPM", "Metadata"
+          ]
+        },
+        { "enum": ["Brew Tap", "unknown"], "description": "Legacy or fallback values." },
+        { "type": "string" }
+      ]
+    },
+
+    "Extra": {
+      "type": "object",
+      "description": "Additional metadata. Content varies by artifact type; unknown keys are allowed.",
+      "additionalProperties": true,
+      "properties": {
+        "ID":                { "type": "string", "description": "Identifier of the configuration entry that produced the artifact." },
+        "Binary":            { "type": "string", "description": "Binary name (archives containing a single binary)." },
+        "Binaries":          { "type": "array", "items": { "type": "string" }, "description": "Binary paths, relative to 'WrappedIn'." },
+        "Ext":               { "type": "string", "pattern": "^(\\..*)?$", "description": "File extension, including the leading dot. May be an empty string when the artifact has no extension (e.g. a binary on Linux or macOS)." },
+        "Format":            { "type": "string", "description": "Archive or package format.", "examples": ["tar.gz", "zip", "deb", "rpm"] },
+        "WrappedIn":         { "type": "string", "description": "Root directory name inside the archive." },
+        "Checksum":          { "type": "string", "pattern": "^[a-z0-9]+:[0-9a-f]+$", "description": "Checksum in 'algorithm:hex' format (crc32, md5, sha1, sha224, sha256, sha384, sha512)." },
+        "ChecksumOf":        { "type": "string", "description": "Identifies the artifact a checksum entry refers to." },
+        "Size":              { "type": "integer", "minimum": 0, "description": "File size in bytes." },
+        "Digest":            { "type": "string", "description": "Container image digest." },
+        "Platforms":         { "type": "array", "items": { "type": "string" }, "description": "Platforms a container image was built for." },
+        "Replaces":          { "type": "boolean", "description": "Whether a universal binary replaces the single-architecture ones." },
+        "Files":             { "type": "array", "items": { "type": "string" }, "description": "Additional files included in an archive." },
+        "DynamicallyLinked": { "type": "boolean", "description": "Whether the binary is dynamically linked." },
+        "Builds":            { "type": "array", "description": "Build entries associated with the artifact. Element type is unspecified." }
+      }
+    }
+  }
+}

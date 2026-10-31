@@ -50,3 +50,21 @@ func NewRootCommand() *cobra.Command {
 
 	return root
 }
+
+// ExitCode is the exit code of the process for err, the error of cmd run by ExecuteC: 0 without
+// an error, 2 for a usage error, else the exit-code setting. A configuration that failed to
+// load has no setting: 1.
+func ExitCode(cmd *cobra.Command, err error) int {
+	if err == nil {
+		return 0
+	}
+	if config.IsUsageError(err) {
+		return 2
+	}
+	if cmd != nil {
+		if cfg := config.From(cmd.Context()); cfg != nil {
+			return cfg.ExitCode
+		}
+	}
+	return 1
+}

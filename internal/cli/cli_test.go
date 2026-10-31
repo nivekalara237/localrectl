@@ -2,8 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -426,5 +429,65 @@ func TestPrintTextFails(t *testing.T) {
 	var buf bytes.Buffer
 	if err := v.printText(&buf); err != nil || strings.Join(strings.Fields(buf.String()), " ") != "SETTING VALUE SOURCE a - default" {
 		t.Errorf("printText() = %v, %q", err, buf.String())
+	}
+}
+
+// exit-code applies to the failure of any command; a usage error stays 2.
+func TestExitCode(t *testing.T) {
+	srv, _ := schemaServer(t, http.StatusOK, productSchema)
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
+
+	for _, tc := range []struct {
+		name string
+		env  string // LOCAL_REGISTRY_EXIT_CODE
+		file string // content of the config file
+		args []string
+		want int
+	}{
+		{"success", "", "", []string{"version"}, 0},
+		{"default", "", "", []string{"ping", "--server-url", closed.URL}, 1},
+		{"flag on ping", "", "", []string{"ping", "--server-url", closed.URL, "--exit-code", "3"}, 3},
+		{"flag on validate", "", "", []string{"validate", "--server-url", srv.URL, "registry.json", "--exit-code", "4"}, 4},
+		{"environment", "5", "", []string{"ping", "--server-url", closed.URL}, 5},
+		{"config file", "", "exit-code: 6\n", []string{"ping", "--server-url", closed.URL}, 6},
+		{"0 never fails", "", "", []string{"ping", "--server-url", closed.URL, "--exit-code", "0"}, 0},
+		{"usage error", "", "", []string{"ping", "extra", "--exit-code", "7"}, 2},
+		{"unknown flag", "", "", []string{"ping", "--nope", "--exit-code", "7"}, 2},
+		{"exit code out of range", "", "", []string{"ping", "--exit-code", "200"}, 2},
+		{"missing config file", "", "", []string{"ping", "--config", "nope.yaml", "--exit-code", "7"}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolate(t)
+			args := tc.args
+			if tc.env != "" {
+				t.Setenv("LOCAL_REGISTRY_EXIT_CODE", tc.env)
+			}
+			if tc.file != "" {
+				args = append(args, "--config", writeConfig(t, tc.file, 0o600))
+			}
+			r := run(t, args...)
+			if got := ExitCode(r.cmd, r.err); got != tc.want {
+				t.Errorf("ExitCode(%v) = %d, want %d", r.err, got, tc.want)
+			}
+		})
+	}
+
+	// Without a loaded configuration, there is no exit-code setting.
+	bare := newPingCommand()
+	bare.SetContext(context.Background())
+	for _, cmd := range []*cobra.Command{nil, bare} {
+		if got := ExitCode(cmd, errors.New("x")); got != 1 {
+			t.Errorf("ExitCode(%v, x) = %d, want 1", cmd, got)
+		}
+	}
+}
+
+// A command must not declare its own --exit-code: it would hide the global one from LoadConfig.
+func TestExitCodeNotShadowed(t *testing.T) {
+	for _, c := range NewRootCommand().Commands() {
+		if c.LocalNonPersistentFlags().Lookup("exit-code") != nil {
+			t.Errorf("%s declares its own --exit-code", c.Name())
+		}
 	}
 }
