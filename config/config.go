@@ -50,6 +50,7 @@ var nestedFlags = map[string]string{
 var Keys = []string{
 	"server.url", "server.upload-token", "server.ca-file",
 	"output", "retries", "timeout", "no-color", "verbose", "quiet",
+	"exit-code",
 }
 
 // Config is the resolved configuration of one run. Each LoadConfig builds its own: nothing is
@@ -234,6 +235,7 @@ func LoadConfig(fs *pflag.FlagSet, notes *logging.Notes) (*Config, error) {
 	cfg.Quiet = boolean("quiet")
 	cfg.Retries = iint("retries")
 	cfg.Timeout = iint("timeout")
+	cfg.ExitCode = iint("exit-code")
 
 	if len(errs) > 0 {
 		return c, usageError{errors.Join(errs...)}
@@ -318,6 +320,11 @@ func validate(cfg *AppUntypedConfig) error {
 			return usagef("%s cannot be negative", l.name)
 		}
 	}
+	// Above 125, the shells give the codes a meaning (126 not executable, 127 not found, 128+n
+	// killed by signal n), and the system keeps only the low 8 bits.
+	if cfg.ExitCode < 0 || cfg.ExitCode > 125 {
+		return usagef("exit-code %d must be between 0 and 125", cfg.ExitCode)
+	}
 
 	if cfg.Server.BaseUrl != "" {
 		ur, err := url.Parse(cfg.Server.BaseUrl)
@@ -341,6 +348,7 @@ func AddFlags(fs *pflag.FlagSet) {
 	fs.Bool("no-color", false, "Output without color")
 	fs.Int("retries", 3, "News attempts against network 5xx error (3 by default)")
 	fs.Int("timeout", 300, "Timeout delay(5min default)")
+	fs.Int("exit-code", 1, "Exit code of a failed command, for the CI (0 never fails the job; usage errors stay 2)")
 
 	fs.SortFlags = false
 	fs.VisitAll(func(flag *pflag.Flag) {
@@ -422,5 +430,6 @@ func (c *Config) HttpClient() *httpclient.Client {
 	if c.Server.CaFile != "" {
 		opts = append(opts, httpclient.WithTLSCACertFile(c.Server.CaFile))
 	}
-	return httpclient.NewClientHttp(opts...)
+	c.httpClient = httpclient.NewClientHttp(opts...)
+	return c.httpClient
 }

@@ -93,6 +93,7 @@ func newConfigView(cfg *config.Config) configView {
 		"no-color":            cfg.NoColor,
 		"verbose":             cfg.Verbose,
 		"quiet":               cfg.Quiet,
+		"exit-code":           cfg.ExitCode,
 	}
 	view := configView{Settings: []setting{{"config", orNil(cfg.File()), cfg.Source("config")}}}
 	for _, k := range config.Keys {

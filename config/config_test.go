@@ -2,14 +2,20 @@ package config
 
 import (
 	"context"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/nivekalara237/localrectl/internal/logging"
 	"github.com/spf13/pflag"
@@ -104,6 +110,7 @@ retries: 5
 output: json
 no-color: true
 verbose: true
+exit-code: 4
 `
 
 func TestLoadConfigDefaults(t *testing.T) {
@@ -111,10 +118,11 @@ func TestLoadConfigDefaults(t *testing.T) {
 	c, notes := mustLoad(t)
 
 	want := AppUntypedConfig{
-		Server:  ServerConf{BaseUrl: "http://localhost:8077"},
-		Timeout: 300,
-		Retries: 3,
-		Output:  "text",
+		Server:   ServerConf{BaseUrl: "http://localhost:8077"},
+		Timeout:  300,
+		Retries:  3,
+		Output:   "text",
+		ExitCode: 1,
 	}
 	if c.AppUntypedConfig != want {
 		t.Errorf("config = %+v, want %+v", c.AppUntypedConfig, want)
@@ -157,11 +165,12 @@ func TestLoadConfigFile(t *testing.T) {
 			UploadToken: "0123456789abcdef",
 			CaFile:      "/etc/ssl/ca.pem",
 		},
-		Timeout: 60,
-		Retries: 5,
-		Verbose: true,
-		NoColor: true,
-		Output:  "json",
+		Timeout:  60,
+		Retries:  5,
+		Verbose:  true,
+		NoColor:  true,
+		Output:   "json",
+		ExitCode: 4,
 	}
 	if c.AppUntypedConfig != want {
 		t.Errorf("config = %+v, want %+v", c.AppUntypedConfig, want)
@@ -371,6 +380,8 @@ func TestLoadConfigErrors(t *testing.T) {
 		{"quiet and verbose", "", []string{"-q", "-v"}, []string{"--quiet and --verbose"}},
 		{"negative retries", "", []string{"--retries", "-1"}, []string{"retries cannot be negative"}},
 		{"negative timeout", "", []string{"--timeout", "-1"}, []string{"timeout cannot be negative"}},
+		{"negative exit code", "", []string{"--exit-code", "-1"}, []string{"exit-code -1 must be between 0 and 125"}},
+		{"exit code of the shell", "exit-code: 126\n", nil, []string{"exit-code 126 must be between 0 and 125"}},
 		{"url scheme", "", []string{"--server-url", "ftp://r.example.com"}, []string{"server.url ftp://r.example.com must be"}},
 		{"url without host", "", []string{"--server-url", "https://"}, []string{"server.url"}},
 		{"url with user", "", []string{"--server-url", "https://u:p@r.example.com"}, []string{"server.url"}},
@@ -607,4 +618,158 @@ func TestFileKeys(t *testing.T) {
 			t.Errorf("fileKeys() holds %q", k)
 		}
 	}
+}
+
+// The fields of httpclient.Client are not exported: each option is checked by what the client
+// does against a test server.
+
+// countingServer answers with the statuses in order (200 once they run out), and counts the
+// requests by path.
+func countingServer(t *testing.T, tls bool, statuses ...int) (*httptest.Server, func(path string) int) {
+	t.Helper()
+	var mu sync.Mutex
+	hits := map[string]int{}
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		n := hits[r.URL.Path]
+		hits[r.URL.Path]++
+		mu.Unlock()
+		if n < len(statuses) {
+			w.WriteHeader(statuses[n])
+		}
+		_, _ = w.Write([]byte(r.URL.Path))
+	})
+	srv := httptest.NewUnstartedServer(h)
+	if tls {
+		srv.StartTLS()
+	} else {
+		srv.Start()
+	}
+	t.Cleanup(srv.Close)
+	return srv, func(path string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return hits[path]
+	}
+}
+
+func newTestConfig(url string) *Config {
+	return &Config{AppUntypedConfig: AppUntypedConfig{Server: ServerConf{BaseUrl: url}}}
+}
+
+func get(t *testing.T, cfg *Config, path string) (string, error) {
+	t.Helper()
+	resp, err := cfg.HttpClient().Get(context.Background(), path, nil)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	return string(b), err
+}
+
+func TestConfig_HttpClient(t *testing.T) {
+	t.Run("same client", func(t *testing.T) {
+		t.Parallel()
+		cfg := newTestConfig("http://localhost:8077")
+		if a, b := cfg.HttpClient(), cfg.HttpClient(); a != b {
+			t.Error("HttpClient() returns a new client on each call: the cache is never shared")
+		}
+	})
+
+	t.Run("base url", func(t *testing.T) {
+		t.Parallel()
+		srv, hits := countingServer(t, false)
+		body, err := get(t, newTestConfig(srv.URL), "/registry/json-schema")
+		if err != nil || body != "/registry/json-schema" || hits("/registry/json-schema") != 1 {
+			t.Errorf("Get = %q, %v, want one request to %s/registry/json-schema", body, err, srv.URL)
+		}
+	})
+
+	t.Run("other host", func(t *testing.T) {
+		t.Parallel()
+		srv, _ := countingServer(t, false)
+		if _, err := get(t, newTestConfig(srv.URL), "http://example.org/x"); err == nil {
+			t.Error("Get on another host succeeded: the client must stay on the server")
+		}
+	})
+
+	t.Run("cache", func(t *testing.T) {
+		t.Parallel()
+		srv, hits := countingServer(t, false)
+		cfg := newTestConfig(srv.URL)
+		for range 2 {
+			if _, err := get(t, cfg, "/a"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if n := hits("/a"); n != 1 {
+			t.Errorf("server hit %d times for 2 GET, want 1 (cached)", n)
+		}
+	})
+
+	t.Run("no retries", func(t *testing.T) {
+		t.Parallel()
+		srv, hits := countingServer(t, false, http.StatusServiceUnavailable)
+		if _, err := get(t, newTestConfig(srv.URL), "/a"); err == nil {
+			t.Error("Get succeeded on a 503 without retries")
+		}
+		if n := hits("/a"); n != 1 {
+			t.Errorf("server hit %d times, want 1 with retries 0", n)
+		}
+	})
+
+	t.Run("retries", func(t *testing.T) {
+		t.Parallel()
+		srv, hits := countingServer(t, false, http.StatusServiceUnavailable)
+		cfg := newTestConfig(srv.URL)
+		cfg.Retries = 1 // 1s of backoff
+		if _, err := get(t, cfg, "/a"); err != nil {
+			t.Errorf("Get after a 503 then a 200 = %v, want success", err)
+		}
+		if n := hits("/a"); n != 2 {
+			t.Errorf("server hit %d times, want 2 with retries 1", n)
+		}
+	})
+
+	t.Run("timeout", func(t *testing.T) {
+		t.Parallel()
+		release := make(chan struct{})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+		}))
+		t.Cleanup(func() { close(release); srv.Close() })
+		cfg := newTestConfig(srv.URL)
+		cfg.Timeout = 1
+
+		start := time.Now()
+		if _, err := get(t, cfg, "/slow"); err == nil {
+			t.Error("Get succeeded on a server that never answers")
+		}
+		if d := time.Since(start); d > 5*time.Second {
+			t.Errorf("Get gave up after %v, want about the timeout of 1s", d)
+		}
+	})
+
+	t.Run("ca file", func(t *testing.T) {
+		t.Parallel()
+		srv, _ := countingServer(t, true)
+		ca := filepath.Join(t.TempDir(), "ca.pem")
+		cert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+		if err := os.WriteFile(ca, cert, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := get(t, newTestConfig(srv.URL), "/a"); err == nil {
+			t.Error("Get succeeded without the CA of a self-signed server")
+		}
+		cfg := newTestConfig(srv.URL)
+		cfg.Server.CaFile = ca
+		if _, err := get(t, cfg, "/a"); err != nil {
+			t.Errorf("Get with ca-file = %v, want success", err)
+		}
+	})
 }
