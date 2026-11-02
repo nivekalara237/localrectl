@@ -74,12 +74,33 @@ const artifactsSchemaHelp = "https://local-registry.nivekaa.com/schemas/artifact
 
 func newValidateProductCommand() *cobra.Command {
 	cmd := cobra.Command{
-		Use:   "validate",
+		Use:   "validate <registry.yaml>",
 		Short: "Validate a product card (Registry.yaml)",
-		Long:  "",
-		Example: `lrctl validate /path/to/registry.yaml \
-						--artifacts=/path/to/artifacts.json
-		`,
+		Long: `Validate a product card against the JSON schema published by the server
+(GET <server-url>/registry/json-schema), before uploading it.
+
+The card is a YAML file (.yaml or .yml). It is read before the schema is fetched: a missing
+or broken file is reported without a request to the server. With --artifacts, the
+artifacts.json written by GoReleaser (or by hand) is also checked, against the schema
+built into lrctl (` + artifactsSchemaHelp + `).
+
+The text output gives the status of each file, OK or KO, and the table of its mistakes.
+With -o json, it is {"product": {"status", "mistakes"}, "artifacts": {...}}, where each
+mistake has a key (the field) and a message; artifacts is there with --artifacts only.
+
+Exit codes: 0 when every file is valid; the exit-code setting (1 by default) when a file is
+invalid or when the schema cannot be fetched; 2 for a usage error.`,
+		Example: `  # Validate a product card
+  lrctl validate registry.yaml
+
+  # With the artifacts built by GoReleaser
+  lrctl validate registry.yaml --artifacts dist/artifacts.json
+
+  # In a CI: the mistakes as JSON, and a dedicated exit code
+  lrctl validate registry.yaml --artifacts dist/artifacts.json -o json --exit-code 3
+
+  # The fields in error, with jq
+  lrctl validate registry.yaml -o json | jq -r '.product.mistakes[].key'`,
 		Args: withArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p := logging.From(cmd.Context())
@@ -114,18 +135,18 @@ type section struct {
 
 func (v *validateCmd) printSection(w io.Writer, sect section) error {
 	if sect.result.ok() {
-		return v.printText(w, "STATUS: %s, Message: the %s is valid", sect.result.Status, sect.title)
+		return printText(w, "STATUS: %s, Message: the %s is valid", sect.result.Status, sect.title)
 	}
 
 	err := errors.Join(
-		v.printText(w, "STATUS: %s, Error: %v", sect.result.Status, sect.err),
-		v.printText(w, ""),
+		printText(w, "STATUS: %s, Error: %v", sect.result.Status, sect.err),
+		printText(w, ""),
 	)
 	// The tabwriter buffers until Flush, which returns the write error.
 	tabw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	_ = v.printText(tabw, "NO\tFIELD\tMISTAKE")
+	_ = printText(tabw, "NO\tFIELD\tMISTAKE")
 	for idx, m := range sect.result.Mistakes {
-		_ = v.printText(tabw, "%d\t%s\t%s", idx+1, m.Key, m.Message)
+		_ = printText(tabw, "%d\t%s\t%s", idx+1, m.Key, m.Message)
 	}
 	return errors.Join(err, tabw.Flush())
 }
@@ -153,8 +174,8 @@ func (v *validateCmd) displayResult(res *validateResult, p *logging.Printer) err
 		for _, s := range sections {
 			if multi && !s.result.ok() {
 				errs = append(errs,
-					v.printText(w, "--------------------------- [ %s ] ---------------------------", s.title),
-					v.printText(w, ""))
+					printText(w, "--------------------------- [ %s ] ---------------------------", s.title),
+					printText(w, ""))
 			}
 			errs = append(errs, v.printSection(w, s))
 		}
@@ -164,7 +185,7 @@ func (v *validateCmd) displayResult(res *validateResult, p *logging.Printer) err
 	return errors.Join(displayErr, errors.Join(validationErrors...))
 }
 
-func (v *validateCmd) printText(w io.Writer, format string, args ...any) error {
+func printText(w io.Writer, format string, args ...any) error {
 	_, err := fmt.Fprintf(w, format+"\n", args...)
 	return err
 }

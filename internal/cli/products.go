@@ -9,17 +9,20 @@ type productResult struct {
 	Items     any    `json:"items"`
 }
 
-var productDescription = `
+const productDescription = `
 lrctl products <command> [args]
 `
 
 func newProductsCommand() *cobra.Command {
-	return &cobra.Command{
+	cmd := cobra.Command{
 		Use:   "products",
 		Short: "Get details about a specific product",
+		Long:  productDescription,
 		Example: `lrctl products validate /path/to/registry.yaml \
 						--product-name=gitlab-plugin \
 						--Artifacts=/path/to/Artifacts.json
 		`,
 	}
+
+	return &cmd
 }
