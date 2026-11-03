@@ -187,7 +187,7 @@ func (v *productVersionsCmd) displayResult(result *versionsResult, p *logging.Pr
 		PublishedAt    string `json:"PublishedAt"`
 	}
 
-	listed := []vItem{}
+	var listed []vItem
 	var versions []versionItem
 
 	for _, ver := range result.index.Versions {
@@ -209,10 +209,7 @@ func (v *productVersionsCmd) displayResult(result *versionsResult, p *logging.Pr
 		if len(suffixes) > 0 {
 			suffix = " (" + strings.Join(suffixes, ", ") + ")"
 		}
-		tag := ver.Tag
-		if tag == "" {
-			tag = "-"
-		}
+		tag := orDash(ver.Tag)
 		sec := "-"
 		if ver.SecurityUpdates {
 			sec = "True"
