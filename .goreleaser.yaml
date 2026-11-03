@@ -16,7 +16,10 @@ builds:
     goarch: [amd64, arm64]
     flags: [-trimpath]
     ldflags:
-      - -s -w -X main.version={{ .Tag }}
+      - -s -w
+      - -X github.com/nivekalara237/localrectl/internal/build.Version={{ .Version }}
+      - -X github.com/nivekalara237/localrectl/internal/build.Commit={{ .ShortCommit }}
+      - -X github.com/nivekalara237/localrectl/internal/build.Date={{ .Date }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:
@@ -63,9 +66,9 @@ dockers_v2:
     platforms: [linux/amd64, linux/arm64]
     sbom: true
     labels:
-      org.opencontainers.image.title: local-registry
+      org.opencontainers.image.title: localrectl
       org.opencontainers.image.description: localrectl is the command-line client of local-registry
-      org.opencontainers.image.licenses: Apache-2.0
+      org.opencontainers.image.licenses: MIT
       org.opencontainers.image.version: "{{ .Version }}"
       org.opencontainers.image.revision: "{{ .FullCommit }}"
       org.opencontainers.image.name: "{{ .ProjectName }}"

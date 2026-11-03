@@ -187,7 +187,7 @@ func (v *productVersionsCmd) displayResult(result *versionsResult, p *logging.Pr
 		PublishedAt    string `json:"PublishedAt"`
 	}
 
-	var listed []vItem
+	listed := []vItem{}
 	var versions []versionItem
 
 	for _, ver := range result.index.Versions {

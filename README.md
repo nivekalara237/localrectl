@@ -1,5 +1,13 @@
 # localrectl
 
+[![patch](https://github.com/nivekalara237/localrectl/actions/workflows/patch.yml/badge.svg)](https://github.com/nivekalara237/localrectl/actions/workflows/patch.yml)
+[![security](https://github.com/nivekalara237/localrectl/actions/workflows/security.yml/badge.svg)](https://github.com/nivekalara237/localrectl/actions/workflows/security.yml)
+[![coverage](https://codecov.io/gh/nivekalara237/localrectl/graph/badge.svg)](https://codecov.io/gh/nivekalara237/localrectl)
+[![release](https://github.com/nivekalara237/localrectl/actions/workflows/release.yml/badge.svg)](https://github.com/nivekalara237/localrectl/actions/workflows/release.yml)
+[![latest version](https://img.shields.io/github/v/release/nivekalara237/localrectl?include_prereleases&sort=semver&display_name=tag&label=version)](https://github.com/nivekalara237/localrectl/releases)
+[![Go version](https://img.shields.io/github/go-mod/go-version/nivekalara237/localrectl)](go.mod)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **`localrectl` is the command-line client of [local-registry](https://github.com/nivekalara237/local-registry).**
 
 local-registry is a private server where your teams store the versions of their internal deliverables: binaries, archives, configuration bundles, any file. `localrectl` talks to this server for you, from your terminal or from a CI pipeline.
@@ -12,6 +20,9 @@ local-registry is a private server where your teams store the versions of their 
 - [What localrectl does](#what-localrectl-does)
 - [Words to know](#words-to-know)
 - [Install](#install)
+  - [From the GitHub releases](#from-the-github-releases-recommended)
+  - [With Docker](#with-docker)
+  - [From the source code](#from-the-source-code)
 - [Getting started](#getting-started)
 - [Configuration](#configuration)
 - [Commands](#commands)
@@ -46,15 +57,63 @@ local-registry is a private server where your teams store the versions of their 
 
 ## Install
 
+Choose one of these three ways.
+
+### From the GitHub releases (recommended)
+
+Each version is on the [releases page](https://github.com/nivekalara237/localrectl/releases), for Linux, macOS and Windows, on `amd64` (Intel, AMD) and `arm64` (Apple Silicon, ARM servers).
+
+On Linux or macOS, set the version and your platform, then download and unpack the archive:
+
+```sh
+VERSION=1.0.0      # the version you want, without the "v"
+OS=linux           # linux or darwin (macOS)
+ARCH=amd64         # amd64 or arm64
+
+curl -fsSLO "https://github.com/nivekalara237/localrectl/releases/download/v${VERSION}/localrectl_${VERSION}_${OS}_${ARCH}.tar.gz"
+curl -fsSLO "https://github.com/nivekalara237/localrectl/releases/download/v${VERSION}/localrectl_${VERSION}_checksums.txt"
+sha256sum --ignore-missing -c "localrectl_${VERSION}_checksums.txt"    # on macOS: shasum -a 256 --ignore-missing -c
+tar xzf "localrectl_${VERSION}_${OS}_${ARCH}.tar.gz" localrectl
+sudo mv localrectl /usr/local/bin/
+```
+
+The `sha256sum` line checks that the archive is the one that was built. It must print `OK`.
+
+On Windows, download `localrectl_<version>_windows_amd64.zip` (or `_arm64.zip`) from the releases page, unzip it, and put `localrectl.exe` in a folder of your `PATH`.
+
+### With Docker
+
+The image holds only `localrectl`. Nothing to install: give the settings with `-e`, and the command after the image name.
+
+```sh
+docker run --rm -e LOCAL_REGISTRY_URL=https://registry.example.com \
+  nivekalara237/localrectl ping
+```
+
+To read a file of the current folder, such as a product card, mount the folder:
+
+```sh
+docker run --rm -e LOCAL_REGISTRY_URL=https://registry.example.com \
+  -v "$PWD:/work" -w /work \
+  nivekalara237/localrectl validate registry.yaml
+```
+
+- The image is on Docker Hub (`nivekalara237/localrectl`) and on GitHub (`ghcr.io/nivekalara237/localrectl`), for `linux/amd64` and `linux/arm64`.
+- Tags: `1.2.0` for one exact version, `1.2` for the last fix of `1.2`, `latest` for the last stable version.
+- Inside the container, `localhost` is the container itself. To reach a server on your own machine, add `--network host` on Linux, or use `http://host.docker.internal:8077` on macOS and Windows.
+
+### From the source code
+
 You need [Go](https://go.dev/dl/) 1.27 or later.
 
 ```sh
 git clone https://github.com/nivekalara237/localrectl.git
 cd localrectl
 go build -o localrectl ./cmd
+sudo mv localrectl /usr/local/bin/
 ```
 
-Move the `localrectl` file to a folder of your `PATH`, such as `/usr/local/bin`. Then check that it works:
+### Check the install
 
 ```sh
 localrectl version
@@ -298,4 +357,4 @@ gofmt -l . && go vet ./... && go test -race ./...
 
 ## License
 
-`localrectl` is under the MIT license: see [LICENSE](LICENSE).
+`localrectl` is under the MIT license: see [LICENSE](LICENSE) and [NOTICE](NOTICE).
