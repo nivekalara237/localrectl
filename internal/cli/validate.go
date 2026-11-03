@@ -82,7 +82,7 @@ func newValidateProductCommand() *cobra.Command {
 The card is a YAML file (.yaml or .yml). It is read before the schema is fetched: a missing
 or broken file is reported without a request to the server. With --artifacts, the
 artifacts.json written by GoReleaser (or by hand) is also checked, against the schema
-built into lrctl (` + artifactsSchemaHelp + `).
+built into localrectl (` + artifactsSchemaHelp + `).
 
 The text output gives the status of each file, OK or KO, and the table of its mistakes.
 With -o json, it is {"product": {"status", "mistakes"}, "artifacts": {...}}, where each
@@ -91,16 +91,16 @@ mistake has a key (the field) and a message; artifacts is there with --artifacts
 Exit codes: 0 when every file is valid; the exit-code setting (1 by default) when a file is
 invalid or when the schema cannot be fetched; 2 for a usage error.`,
 		Example: `  # Validate a product card
-  lrctl validate registry.yaml
+  localrectl validate registry.yaml
 
   # With the artifacts built by GoReleaser
-  lrctl validate registry.yaml --artifacts dist/artifacts.json
+  localrectl validate registry.yaml --artifacts dist/artifacts.json
 
   # In a CI: the mistakes as JSON, and a dedicated exit code
-  lrctl validate registry.yaml --artifacts dist/artifacts.json -o json --exit-code 3
+  localrectl validate registry.yaml --artifacts dist/artifacts.json -o json --exit-code 3
 
   # The fields in error, with jq
-  lrctl validate registry.yaml -o json | jq -r '.product.mistakes[].key'`,
+  localrectl validate registry.yaml -o json | jq -r '.product.mistakes[].key'`,
 		Args: withArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p := logging.From(cmd.Context())

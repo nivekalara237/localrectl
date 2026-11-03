@@ -32,3 +32,9 @@ go.work.sum
 .idea/
 .vscode/
 .claude/
+
+SUGGEST*.md
+
+bin/
+
+out/

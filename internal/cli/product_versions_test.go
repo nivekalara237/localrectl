@@ -22,7 +22,7 @@ import (
 // latest, and a prerelease without tag.
 const productIndex = `{
   "displayName": "Bitbucket VCS plugin",
-  "install": "lrctl install bb-vcs-plugin",
+  "install": "localrectl install bb-vcs-plugin",
   "latest": "2.0.0",
   "versions": [
     {"version": "1.0.0", "tag": "v1.0.0", "publishedAt": "2026-01-10", "deprecated": true},

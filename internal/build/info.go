@@ -29,7 +29,7 @@ func GetBuildInfo() Info {
 		Date:     Date,
 		GoVer:    runtime.Version(),
 		Platform: runtime.GOOS + "/" + runtime.GOARCH,
-		Name:     "lrctl",
+		Name:     "localrectl",
 	}
 
 	buildInfo, yes := debug.ReadBuildInfo()

@@ -44,7 +44,7 @@ func newConfigCommand() *cobra.Command {
 file, defaults), validate it, and print each setting with its source. The upload token is
 never printed: only whether it is set and its token_id, as written in the audit log.
 ` + configHelp,
-		Example: `  lrctl config --config ~/.lr/config.yaml
+		Example: `  localrectl config --config ~/.lr/config.yaml
   LOCAL_REGISTRY_CA_FILE=./root.cert local-registry config`,
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -71,7 +71,7 @@ func maskToken(t string) string {
 	return t[:7] + "*****"
 }
 
-// setting is one line of 'lrctl config'. A nil Value is a setting with no value.
+// setting is one line of 'localrectl config'. A nil Value is a setting with no value.
 type setting struct {
 	Name   string `json:"name"`
 	Value  any    `json:"value"`

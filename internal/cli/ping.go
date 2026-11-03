@@ -21,7 +21,7 @@ type pingResult struct {
 	TokenSet  bool   `json:"token_set"`
 }
 
-// newPingCommand is a command to ping the local-registry server "lrctl ping -o json"
+// newPingCommand is a command to ping the local-registry server "localrectl ping -o json"
 func newPingCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "ping",

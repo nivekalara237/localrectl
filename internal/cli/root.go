@@ -10,7 +10,7 @@ import (
 
 func NewRootCommand() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "lrctl",
+		Use:           "localrectl",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

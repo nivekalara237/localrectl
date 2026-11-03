@@ -83,16 +83,16 @@ With -o json, the same versions are printed as an array of objects with the keys
 tag, publishedAt, securityUpdates, deprecated and prerelease: an empty array when the
 product has none. A product that does not exist fails with "not found".`,
 		Example: `  # The versions of a product
-  lrctl versions bb-vcs-plugin
+  localrectl versions bb-vcs-plugin
 
   # With the prereleases
-  lrctl versions bb-vcs-plugin --prerelease
+  localrectl versions bb-vcs-plugin --prerelease
 
   # The version numbers alone, with jq
-  lrctl versions bb-vcs-plugin -o json | jq -r '.[].version'
+  localrectl versions bb-vcs-plugin -o json | jq -r '.[].version'
 
   # The release.json of one of them
-  lrctl release bb-vcs-plugin v2.0.0`,
+  localrectl release bb-vcs-plugin v2.0.0`,
 		Args:    productNameArg,
 		Aliases: []string{"product-versions"},
 		RunE: func(cmd *cobra.Command, args []string) error {

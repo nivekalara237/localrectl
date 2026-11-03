@@ -1,0 +1,24 @@
+version: "2"
+
+run:
+  go: "1.27"
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+#    - cyclop
+    - copyloopvar
+#    - contextcheck
+    - dupl
+#    - depguard
+    - decorder
+    - dogsled
+    - durationcheck
+#    - goconst
+#    - gocyclo
+    - godox
+#    - gosec
+    - iface
+#    - nilnil
+  exclusions:
+    presets:
+      - std-error-handling # unchecked Close/Remove in defers and cleanups

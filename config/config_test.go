@@ -54,7 +54,7 @@ func writeFile(t *testing.T, path, content string, mode os.FileMode) string {
 
 func newFlags(t *testing.T, args ...string) *pflag.FlagSet {
 	t.Helper()
-	fs := pflag.NewFlagSet("lrctl", pflag.ContinueOnError)
+	fs := pflag.NewFlagSet("localrectl", pflag.ContinueOnError)
 	AddFlags(fs)
 	logging.AddArgs(fs)
 	logging.AddLogArgs(fs)
@@ -517,7 +517,7 @@ func TestUsage(t *testing.T) {
 	if !IsUsageError(u) || !errors.Is(u, base) || u.Error() != "bad flag" {
 		t.Errorf("Usage(%v) = %v", base, u)
 	}
-	if !IsUsageError(fmt.Errorf("lrctl: %w", u)) {
+	if !IsUsageError(fmt.Errorf("localrectl: %w", u)) {
 		t.Error("a wrapped usage error is not found")
 	}
 	if IsUsageError(base) || IsUsageError(nil) {
@@ -567,7 +567,7 @@ func TestExpandPath(t *testing.T) {
 }
 
 func TestAddFlags(t *testing.T) {
-	fs := pflag.NewFlagSet("lrctl", pflag.ContinueOnError)
+	fs := pflag.NewFlagSet("localrectl", pflag.ContinueOnError)
 	AddFlags(fs)
 
 	for name, env := range map[string]string{

@@ -287,8 +287,8 @@ func TestReleaseExample(t *testing.T) {
 		if len(fields) == 0 || fields[0] == "#" {
 			continue
 		}
-		if fields[0] != "lrctl" {
-			t.Fatalf("example %q does not start with lrctl", line)
+		if fields[0] != "localrectl" {
+			t.Fatalf("example %q does not start with localrectl", line)
 		}
 		if i := slices.Index(fields, "|"); i >= 0 {
 			fields = fields[:i]

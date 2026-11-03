@@ -93,26 +93,26 @@ func newProductsCommand() *cobra.Command {
 		Short: "List and search the products",
 		Long:  productDescription,
 		Example: `  # Every product, one page
-  lrctl products
+  localrectl products
 
   # Every product, all the pages
-  lrctl products --all
+  localrectl products --all
 
   # A text search
-  lrctl products --query gitlab
+  localrectl products --query gitlab
 
   # The plugins with both keywords and a label
-  lrctl products --keyword vcs --keyword plugin --label team=devtools
+  localrectl products --keyword vcs --keyword plugin --label team=devtools
 
   # The deprecated products of an owner
-  lrctl products --owner devtools@example.com --deprecated
+  localrectl products --owner devtools@example.com --deprecated
 
   # Updated since the start of the year, 20 per page, then the next page
-  lrctl products --updated-since 2026-01-01 --limit 20
-  lrctl products --updated-since 2026-01-01 --limit 20 --cursor <next>
+  localrectl products --updated-since 2026-01-01 --limit 20
+  localrectl products --updated-since 2026-01-01 --limit 20 --cursor <next>
 
   # The names alone, with jq
-  lrctl products --all -o json | jq -r '.products[].product'`,
+  localrectl products --all -o json | jq -r '.products[].product'`,
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p := logging.From(cmd.Context())
