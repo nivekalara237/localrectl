@@ -5,12 +5,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/nivekalara237/localrectl/config"
@@ -19,40 +17,14 @@ import (
 const releaseJSON = `{"version":"v1.6.23","publishedAt":"2026-06-20","prerelease":false,` +
 	`"assets":[{"name":"plugin.jar","sha256":"abc"}]}`
 
-type releaseServer struct {
-	*httptest.Server
-	mu   sync.Mutex
-	seen []seenRequest
-}
-
 // newReleaseServer answers /<product>/releases/<version> with status and body.
-func newReleaseServer(t *testing.T, status int, body string) *releaseServer {
+func newReleaseServer(t *testing.T, status int, body string) *jsonServer {
 	t.Helper()
-	s := &releaseServer{}
-	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.mu.Lock()
-		s.seen = append(s.seen, seenRequest{r.Method, r.URL.EscapedPath(), r.Header.Get("Authorization")})
-		s.mu.Unlock()
-		if !strings.Contains(r.URL.Path, "/releases/") {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, _ = w.Write([]byte(body))
-	}))
-	t.Cleanup(s.Close)
-	return s
-}
-
-func (s *releaseServer) requests() []seenRequest {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]seenRequest(nil), s.seen...)
+	return newJSONServer(t, status, body, func(path string) bool { return strings.Contains(path, "/releases/") })
 }
 
 // release runs without retries: a retried 5xx would wait 1s per attempt.
-func release(t *testing.T, s *releaseServer, args ...string) result {
+func release(t *testing.T, s *jsonServer, args ...string) result {
 	t.Helper()
 	return run(t, append([]string{"release", "--server-url", s.URL, "--retries", "0"}, args...)...)
 }
@@ -287,8 +259,8 @@ func TestReleaseExample(t *testing.T) {
 		if len(fields) == 0 || fields[0] == "#" {
 			continue
 		}
-		if fields[0] != "lrctl" {
-			t.Fatalf("example %q does not start with lrctl", line)
+		if fields[0] != "localrectl" {
+			t.Fatalf("example %q does not start with localrectl", line)
 		}
 		if i := slices.Index(fields, "|"); i >= 0 {
 			fields = fields[:i]

@@ -46,7 +46,7 @@ var nestedFlags = map[string]string{
 	"server.ca-file":      "server-ca-file",
 }
 
-// Keys are the settings, in the order 'lrctl config' prints them.
+// Keys are the settings, in the order 'localrectl config' prints them.
 var Keys = []string{
 	"server.url", "server.upload-token", "server.ca-file",
 	"output", "retries", "timeout", "no-color", "verbose", "quiet",

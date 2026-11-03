@@ -75,7 +75,7 @@ type result struct {
 }
 
 func TestPrinterResult(t *testing.T) {
-	v := result{Name: "lrctl", Count: 2}
+	v := result{Name: "localrectl", Count: 2}
 	textFn := func(w io.Writer) error {
 		_, err := io.WriteString(w, "custom text\n")
 		return err
@@ -87,10 +87,10 @@ func TestPrinterResult(t *testing.T) {
 		text   func(io.Writer) error
 		want   string
 	}{
-		{"json ignores text", JSON, textFn, "{\n  \"name\": \"lrctl\",\n  \"count\": 2\n}\n"},
-		{"json without text", JSON, nil, "{\n  \"name\": \"lrctl\",\n  \"count\": 2\n}\n"},
+		{"json ignores text", JSON, textFn, "{\n  \"name\": \"localrectl\",\n  \"count\": 2\n}\n"},
+		{"json without text", JSON, nil, "{\n  \"name\": \"localrectl\",\n  \"count\": 2\n}\n"},
 		{"text uses text", Text, textFn, "custom text\n"},
-		{"text without text", Text, nil, "{lrctl 2}\n"},
+		{"text without text", Text, nil, "{localrectl 2}\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, out, errw := newTestPrinter(Options{Format: tc.format})

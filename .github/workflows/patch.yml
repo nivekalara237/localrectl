@@ -1,0 +1,113 @@
+name: patch
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:
+    secrets:
+      CODECOV_TOKEN:
+        required: false
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: patch-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  GOLANGCI_LINT_VERSION: v2.14.0
+  COVERAGE_MIN: "80"
+  SKIP_PACKAGES: /internal/httpclient$
+
+jobs:
+  build:
+    name: build
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: go mod download
+        run: go mod download
+      - name: go mod tidy
+        run: go mod tidy -diff
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::not gofmt-ed: $unformatted"
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+      - name: build (linux, darwin, windows × amd64, arm64)
+        run: |
+          for os in linux darwin windows; do
+            for arch in amd64 arm64; do
+              echo "build for $os/$arch"
+              CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -o /dev/null ./cmd
+            done
+          done
+
+  test:
+    name: test
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: go test
+        run: go test -race -count=1 $(go list ./... | grep -Ev "$SKIP_PACKAGES")
+
+  coverage:
+    name: coverage
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: go test with coverage
+        run: go test -count=1 -covermode=atomic -coverprofile=coverage.out $(go list ./... | grep -Ev "$SKIP_PACKAGES")
+      - name: coverage summary
+        run: go tool cover -func=coverage.out | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 14
+      - name: upload coverage to Codecov
+        continue-on-error: true
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.out
+          disable_search: true
+          fail_ci_if_error: false
+      - name: coverage gate (minimum ${{ env.COVERAGE_MIN }}%)
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ { sub("%", "", $3); print $3 }')
+          if awk -v t="$total" -v m="$COVERAGE_MIN" 'BEGIN { exit !(t + 0 >= m + 0) }'; then
+            echo "coverage ${total}% (minimum ${COVERAGE_MIN}%)"
+          else
+            echo "::error::coverage ${total}% is below the ${COVERAGE_MIN}% minimum"
+            exit 1
+          fi

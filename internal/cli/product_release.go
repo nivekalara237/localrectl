@@ -36,23 +36,23 @@ func newProductReleaseCommand() *cobra.Command {
 		Long: `Display the release.json of a version of a product, as published on the server
 (GET <server-url>/<product-name>/releases/<version>).
 
-<version> is a version listed by 'lrctl versions <product-name>' (add --prerelease for the
+<version> is a version listed by 'localrectl versions <product-name>' (add --prerelease for the
 prereleases), or latest for the latest version of the product.
 
 The document is printed as the server returns it, indented, in text as with -o json: pipe
 -o json to jq to read a field. A product or a version that does not exist fails with
 "not found".`,
 		Example: `  # The release.json of a version
-  lrctl release gitlab-vcs-plugin v1.6.23
+  localrectl release gitlab-vcs-plugin v1.6.23
 
   # The latest version
-  lrctl release gitlab-vcs-plugin latest
+  localrectl release gitlab-vcs-plugin latest
 
   # One field of the latest version, with jq
-  lrctl release gitlab-vcs-plugin latest -o json | jq -r .version
+  localrectl release gitlab-vcs-plugin latest -o json | jq -r .version
 
   # On another server
-  lrctl release gitlab-vcs-plugin v1.6.23 --server-url https://registry.example.com`,
+  localrectl release gitlab-vcs-plugin v1.6.23 --server-url https://registry.example.com`,
 		Args:    releaseArgs,
 		Aliases: []string{"product-release"},
 		RunE: func(cmd *cobra.Command, args []string) error {

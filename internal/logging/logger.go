@@ -12,7 +12,7 @@ import (
 )
 
 // Printer writes the result of a command on Out, and everything else (logs, warnings,
-// errors) on Err, so that `lrctl <command> <args> -o json | jq` always reads a single JSON document.
+// errors) on Err, so that `localrectl <command> <args> -o json | jq` always reads a single JSON document.
 type Printer struct {
 	NoColor  bool
 	Format   Format

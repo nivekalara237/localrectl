@@ -22,7 +22,7 @@ import (
 // latest, and a prerelease without tag.
 const productIndex = `{
   "displayName": "Bitbucket VCS plugin",
-  "install": "lrctl install bb-vcs-plugin",
+  "install": "localrectl install bb-vcs-plugin",
   "latest": "2.0.0",
   "versions": [
     {"version": "1.0.0", "tag": "v1.0.0", "publishedAt": "2026-01-10", "deprecated": true},
@@ -32,22 +32,23 @@ const productIndex = `{
   ]
 }`
 
-type indexServer struct {
+// jsonServer records each request, and answers status and body when match accepts the path,
+// else 404.
+type jsonServer struct {
 	*httptest.Server
 	mu   sync.Mutex
 	seen []seenRequest
 }
 
-// newIndexServer answers /<product>/index with status and body for every product.
-func newIndexServer(t *testing.T, status int, body string) *indexServer {
+func newJSONServer(t *testing.T, status int, body string, match func(path string) bool) *jsonServer {
 	t.Helper()
-	s := &indexServer{}
+	s := &jsonServer{}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		// The escaped path tells a/b (two segments) from a%2Fb (one).
 		s.seen = append(s.seen, seenRequest{r.Method, r.URL.EscapedPath(), r.Header.Get("Authorization")})
 		s.mu.Unlock()
-		if !strings.HasSuffix(r.URL.Path, "/index") {
+		if !match(r.URL.Path) {
 			http.NotFound(w, r)
 			return
 		}
@@ -59,14 +60,20 @@ func newIndexServer(t *testing.T, status int, body string) *indexServer {
 	return s
 }
 
-func (s *indexServer) requests() []seenRequest {
+func (s *jsonServer) requests() []seenRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]seenRequest(nil), s.seen...)
 }
 
+// newIndexServer answers /<product>/index with status and body for every product.
+func newIndexServer(t *testing.T, status int, body string) *jsonServer {
+	t.Helper()
+	return newJSONServer(t, status, body, func(path string) bool { return strings.HasSuffix(path, "/index") })
+}
+
 // versions runs without retries: a retried 5xx would wait 1s per attempt.
-func versions(t *testing.T, s *indexServer, args ...string) result {
+func versions(t *testing.T, s *jsonServer, args ...string) result {
 	t.Helper()
 	return run(t, append([]string{"versions", "--server-url", s.URL, "--retries", "0"}, args...)...)
 }

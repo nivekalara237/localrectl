@@ -1,13 +1,13 @@
 # `internal/logging` : mode d'emploi
 
-Ce paquet gère tout ce que `lrctl` écrit : le résultat d'une commande, les logs, les avertissements et les erreurs.
+Ce paquet gère tout ce que `localrectl` écrit : le résultat d'une commande, les logs, les avertissements et les erreurs.
 
 **La règle à respecter :**
 
 - **stdout** ne reçoit que le résultat de la commande. En `-o json`, c'est un seul document JSON.
 - **stderr** reçoit tout le reste : les logs, les avertissements et les erreurs.
 
-Ainsi, `lrctl config -o json | jq .` marche toujours, même avec `-v`.
+Ainsi, `localrectl config -o json | jq .` marche toujours, même avec `-v`.
 
 Une commande n'écrit donc jamais avec `fmt.Println`, `os.Stdout` ou `log.Printf`. Elle passe par le `Printer`.
 
@@ -113,7 +113,7 @@ func newPingCommand() *cobra.Command {
 - **En texte**, `Result` appelle la fonction texte. Si elle est `nil`, il fait un `fmt.Fprintln(Out, v)`, ce qui convient pour une simple chaîne.
 - **Appelez `Result` une seule fois par commande.** Deux appels en JSON produiraient deux documents, et `jq` ne saurait plus les lire.
 - **Pour une liste**, renvoyez une struct qui l'enveloppe, comme `{"products": [...]}`, plutôt que le tableau seul. Vous pourrez ainsi y ajouter des champs plus tard sans casser les scripts qui la lisent.
-- **Une valeur absente vaut `nil`**, ce qui donne `null` en JSON. `lrctl config` l'affiche `-` en texte (voir `orNil` dans `internal/cli/config.go`).
+- **Une valeur absente vaut `nil`**, ce qui donne `null` en JSON. `localrectl config` l'affiche `-` en texte (voir `orNil` dans `internal/cli/config.go`).
 
 ### 3.2 Les erreurs : les renvoyer, pas les afficher
 
@@ -234,7 +234,7 @@ Si aucun `Printer` n'est rangé dans le context, `logging.From` renvoie un `Prin
 
 ---
 
-## 6. Utiliser le paquet ailleurs que dans `lrctl`
+## 6. Utiliser le paquet ailleurs que dans `localrectl`
 
 Par exemple dans un autre binaire, ou sans cobra :
 

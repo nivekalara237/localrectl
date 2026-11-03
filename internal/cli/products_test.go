@@ -130,7 +130,7 @@ func TestProductsText(t *testing.T) {
 	}
 }
 
-// Each product is printed as the server returns it: a field lrctl does not know is kept.
+// Each product is printed as the server returns it: a field localrectl does not know is kept.
 func TestProductsJSON(t *testing.T) {
 	isolate(t)
 	s := newProductsServer(t, http.StatusOK, onePage(gitlabProduct, bbProduct))

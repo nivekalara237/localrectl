@@ -75,7 +75,7 @@ func mustRun(t *testing.T, args ...string) result {
 	t.Helper()
 	r := run(t, args...)
 	if r.err != nil {
-		t.Fatalf("lrctl %s: %v\nstderr: %s", strings.Join(args, " "), r.err, r.stderr)
+		t.Fatalf("localrectl %s: %v\nstderr: %s", strings.Join(args, " "), r.err, r.stderr)
 	}
 	return r
 }
@@ -268,10 +268,10 @@ func TestUsageErrors(t *testing.T) {
 		{"quiet and verbose", []string{"config", "-q", "-v"}, "--quiet and --verbose"},
 		{"bad output", []string{"config", "-o", "yaml"}, `output "yaml"`},
 		{"missing config file", []string{"config", "--config", "nope.yaml"}, "nope.yaml"},
-		{"unknown flag", []string{"config", "--bad"}, "unknown flag: --bad (see 'lrctl config --help')"},
-		{"bad flag value", []string{"--retries", "x"}, "(see 'lrctl --help')"},
-		{"argument to config", []string{"config", "extra"}, `unexpected argument "extra" for "lrctl config"`},
-		{"argument to version", []string{"version", "extra"}, `unexpected argument "extra" for "lrctl version"`},
+		{"unknown flag", []string{"config", "--bad"}, "unknown flag: --bad (see 'localrectl config --help')"},
+		{"bad flag value", []string{"--retries", "x"}, "(see 'localrectl --help')"},
+		{"argument to config", []string{"config", "extra"}, `unexpected argument "extra" for "localrectl config"`},
+		{"argument to version", []string{"version", "extra"}, `unexpected argument "extra" for "localrectl version"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			isolate(t)
@@ -358,7 +358,7 @@ func TestVersion(t *testing.T) {
 	isolate(t)
 	t.Run("text", func(t *testing.T) {
 		r := mustRun(t, "version")
-		if !strings.HasPrefix(r.stdout, "lrctl ") || !strings.Contains(r.stdout, runtime.Version()) ||
+		if !strings.HasPrefix(r.stdout, "localrectl ") || !strings.Contains(r.stdout, runtime.Version()) ||
 			strings.Count(r.stdout, "\n") != 1 {
 			t.Errorf("stdout = %q", r.stdout)
 		}
@@ -369,7 +369,7 @@ func TestVersion(t *testing.T) {
 		if err := json.Unmarshal([]byte(r.stdout), &got); err != nil {
 			t.Fatalf("stdout is not JSON: %v\n%s", err, r.stdout)
 		}
-		if got["name"] != "lrctl" || got["go_version"] != runtime.Version() ||
+		if got["name"] != "localrectl" || got["go_version"] != runtime.Version() ||
 			got["platform"] != runtime.GOOS+"/"+runtime.GOARCH {
 			t.Errorf("version = %v", got)
 		}
