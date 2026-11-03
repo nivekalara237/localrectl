@@ -3,7 +3,6 @@ package httpclient
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 )
 
@@ -27,31 +26,6 @@ func (e *ClientError) Error() string {
 		msg += " (request_id=" + e.RequestID + ")"
 	}
 	return msg
-}
-
-// Helper to check the status and return an error
-func checkResponse(resp *http.Response) error {
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return &ClientError{
-			StatusCode: resp.StatusCode,
-			Status:     resp.Status,
-			Body:       body,
-		}
-	}
-	return nil
-}
-
-func (e *ClientError) is5xx() bool {
-	return e.StatusCode <= 500 && e.StatusCode >= 599
-}
-
-func (e *ClientError) isBadRequest() bool {
-	return e.StatusCode == 400
-}
-func (e *ClientError) isNotfound() bool {
-	return e.StatusCode == 404
 }
 
 func (e *ClientError) IsClientError() bool {

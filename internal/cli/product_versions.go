@@ -57,7 +57,6 @@ type productVersionsCmd struct {
 
 type versionsResult struct {
 	index *indexResponse
-	err   error
 }
 
 func newProductVersionsCmd(cfg *config.Config, log *slog.Logger) *productVersionsCmd {

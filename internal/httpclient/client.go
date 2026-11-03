@@ -55,7 +55,6 @@ type Client struct {
 	baseURL        *url.URL
 	retry          RetryConfig
 	cache          Cache
-	tls            TLSConfig
 	allowSubdomain bool
 	hasTlsEnabled  bool
 }
@@ -161,10 +160,6 @@ func WithTLSCAPemData(data string) Option {
 		}
 		c.hasTlsEnabled = true
 	}
-}
-
-func (c *Client) checkResponse(resp *http.Response) error {
-	return checkResponse(resp)
 }
 
 func NewRequestOption(key string, value any) OptionParamItem {
@@ -411,11 +406,6 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 				return io.NopCloser(bytes.NewReader(bodyBytes)), nil
 			}
 		}
-		if req.Body != nil {
-			// Réinitialiser le corps en le relisant depuis le buffer d'origine
-			// Ici, on suppose que le body est un *bytes.Reader ou *strings.Reader (réutilisable)
-			// Pour plus de robustesse, vous pouvez stocker le corps original et le réassigner.
-		}
 
 		resp, err := c.httpClient.Do(reqClone)
 		lastResponse = resp
@@ -427,7 +417,7 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 			lastResponse = &http.Response{StatusCode: http.StatusInternalServerError, Status: "InternalServerError"}
 		} else {
 			// Lire et fermer le corps pour éviter les fuites
-			io.Copy(io.Discard, resp.Body)
+			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			lastErr = fmt.Errorf("retryable status: %s", resp.Status)
 		}
