@@ -2,7 +2,7 @@
 
 [![patch](https://github.com/nivekalara237/localrectl/actions/workflows/patch.yml/badge.svg)](https://github.com/nivekalara237/localrectl/actions/workflows/patch.yml)
 [![security](https://github.com/nivekalara237/localrectl/actions/workflows/security.yml/badge.svg)](https://github.com/nivekalara237/localrectl/actions/workflows/security.yml)
-[![coverage](https://codecov.io/gh/nivekalara237/localrectl/graph/badge.svg)](https://codecov.io/gh/nivekalara237/localrectl)
+[![codecov](https://codecov.io/gh/nivekalara237/localrectl/graph/badge.svg?token=CLSXV0JA2I)](https://codecov.io/gh/nivekalara237/localrectl)
 [![release](https://github.com/nivekalara237/localrectl/actions/workflows/release.yml/badge.svg)](https://github.com/nivekalara237/localrectl/actions/workflows/release.yml)
 [![latest version](https://img.shields.io/github/v/release/nivekalara237/localrectl?include_prereleases&sort=semver&display_name=tag&label=version)](https://github.com/nivekalara237/localrectl/releases)
 [![Go version](https://img.shields.io/github/go-mod/go-version/nivekalara237/localrectl)](go.mod)
@@ -18,7 +18,6 @@ local-registry is a private server where your teams store the versions of their 
 ## Table of contents
 
 - [What localrectl does](#what-localrectl-does)
-- [Words to know](#words-to-know)
 - [Install](#install)
   - [From the GitHub releases](#from-the-github-releases-recommended)
   - [With Docker](#with-docker)
@@ -45,15 +44,6 @@ local-registry is a private server where your teams store the versions of their 
 - **Reading**: find a product, see its versions, read what a version holds. No token needed.
 - **Publishing**: check a product card, then send a new version to the server. Sending needs an upload token.
 
-## Words to know
-
-- **Product**: something your team delivers, such as `billing-agent`. A product has a name and many versions.
-- **Version**: one release of a product, such as `v1.2.0`. Once published, a version never changes.
-- **Latest**: the version the product owners chose as the current one.
-- **Prerelease**: a test version, such as `v2.0.0-rc.1`. It is hidden unless you ask for it.
-- **Product card**: the `registry.yaml` file that describes a product (display name, description, owners, keywords…).
-- **`release.json`**: the file the server writes for each version: its files, their sha256, its date…
-- **Upload token**: the secret password the server asks for before it accepts new files.
 
 ## Install
 
@@ -97,10 +87,6 @@ docker run --rm -e LOCAL_REGISTRY_URL=https://registry.example.com \
   -v "$PWD:/work" -w /work \
   nivekalara237/localrectl validate registry.yaml
 ```
-
-- The image is on Docker Hub (`nivekalara237/localrectl`) and on GitHub (`ghcr.io/nivekalara237/localrectl`), for `linux/amd64` and `linux/arm64`.
-- Tags: `1.2.0` for one exact version, `1.2` for the last fix of `1.2`, `latest` for the last stable version.
-- Inside the container, `localhost` is the container itself. To reach a server on your own machine, add `--network host` on Linux, or use `http://host.docker.internal:8077` on macOS and Windows.
 
 ### From the source code
 
@@ -156,19 +142,19 @@ Each setting can come from four places. When a setting is given in several place
 3. the config file
 4. the default value
 
-| Flag | Environment variable | Config file key | Default | What it does |
-|---|---|---|---|---|
-| `--server-url` | `LOCAL_REGISTRY_URL` | `server.url` | `http://localhost:8077` | Address of the server |
-| | `LOCAL_REGISTRY_UPLOAD_TOKEN` | `server.upload-token` | | Upload token, needed only to publish |
-| `--server-ca-file` | `LOCAL_REGISTRY_CA_FILE` | `server.ca-file` | | Certificate of your company, for an internal HTTPS server |
-| `--config` | `LOCAL_REGISTRY_CONFIG` | | | Config file to read |
-| `-o, --output` | `LOCAL_REGISTRY_OUTPUT` | `output` | `text` | `text` to read it, `json` for scripts and `jq` |
-| `-v, --verbose` | `LOCAL_REGISTRY_VERBOSE` | `verbose` | `false` | Show the details: config file used, requests sent… |
-| `-q, --quiet` | `LOCAL_REGISTRY_QUIET` | `quiet` | `false` | Show only the result and the errors |
-| `--no-color` | `LOCAL_REGISTRY_NO_COLOR` | `no-color` | `false` | No colors |
-| `--timeout` | `LOCAL_REGISTRY_TIMEOUT` | `timeout` | `300` | Time limit of a request, in seconds |
-| `--retries` | `LOCAL_REGISTRY_RETRIES` | `retries` | `3` | Retries after a network or server error |
-| `--exit-code` | `LOCAL_REGISTRY_EXIT_CODE` | `exit-code` | `1` | Exit code of a failed command (see [Exit codes](#exit-codes)) |
+| Flag               | Environment variable          | Config file key       | Default                 | What it does                                                  |
+|--------------------|-------------------------------|-----------------------|-------------------------|---------------------------------------------------------------|
+| `--server-url`     | `LOCAL_REGISTRY_URL`          | `server.url`          | `http://localhost:8077` | Address of the server                                         |
+|                    | `LOCAL_REGISTRY_UPLOAD_TOKEN` | `server.upload-token` |                         | Upload token, needed only to publish                          |
+| `--server-ca-file` | `LOCAL_REGISTRY_CA_FILE`      | `server.ca-file`      |                         | Certificate of your company, for an internal HTTPS server     |
+| `--config`         | `LOCAL_REGISTRY_CONFIG`       |                       |                         | Config file to read                                           |
+| `-o, --output`     | `LOCAL_REGISTRY_OUTPUT`       | `output`              | `text`                  | `text` to read it, `json` for scripts and `jq`                |
+| `-v, --verbose`    | `LOCAL_REGISTRY_VERBOSE`      | `verbose`             | `false`                 | Show the details: config file used, requests sent…            |
+| `-q, --quiet`      | `LOCAL_REGISTRY_QUIET`        | `quiet`               | `false`                 | Show only the result and the errors                           |
+| `--no-color`       | `LOCAL_REGISTRY_NO_COLOR`     | `no-color`            | `false`                 | No colors                                                     |
+| `--timeout`        | `LOCAL_REGISTRY_TIMEOUT`      | `timeout`             | `300`                   | Time limit of a request, in seconds                           |
+| `--retries`        | `LOCAL_REGISTRY_RETRIES`      | `retries`             | `3`                     | Retries after a network or server error                       |
+| `--exit-code`      | `LOCAL_REGISTRY_EXIT_CODE`    | `exit-code`           | `1`                     | Exit code of a failed command (see [Exit codes](#exit-codes)) |
 
 ### The config file
 
@@ -323,15 +309,15 @@ Options:
 
 When a command ends, it returns a number to the shell. A CI pipeline uses it to know whether the step failed.
 
-| Code | Meaning |
-|---|---|
-| 0 | Success |
-| 1 | Network or server error |
-| 2 | Bad use of the command: unknown option, missing argument, wrong setting |
-| 3 | Validation refused (by the server, or by the local check) |
-| 4 | The version already exists |
-| 5 | A sha256 or a signature does not match |
-| 6 | Not found |
+| Code   | Meaning                                                                 |
+|--------|-------------------------------------------------------------------------|
+| 0      | Success                                                                 |
+| 1      | Network or server error                                                 |
+| 2      | Bad use of the command: unknown option, missing argument, wrong setting |
+| 3      | Validation refused (by the server, or by the local check)               |
+| 4      | The version already exists                                              |
+| 5      | A sha256 or a signature does not match                                  |
+| 6      | Not found                                                               |
 
 Codes 3 to 6 come with `publish` and `download`. Today, a failed command returns `1`, or the number you give to `--exit-code`:
 
