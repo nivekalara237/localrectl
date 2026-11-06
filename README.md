@@ -27,7 +27,8 @@ local-registry is a private server where your teams store the versions of their 
 - [Commands](#commands)
   - [ping](#ping-check-the-server)
   - [validate](#validate-check-a-product-card)
-  - [products](#products-find-a-product)
+  - [products](#products-list-every-product)
+  - [products search](#products-search-find-a-product)
   - [versions](#versions-list-the-versions-of-a-product)
   - [release](#release-read-a-version)
   - [publish](#publish-send-a-new-version-coming-soon)
@@ -122,7 +123,7 @@ localrectl ping
 **3. Find a product, then its versions, then the content of a version.**
 
 ```sh
-localrectl products --query billing
+localrectl products search --query billing
 localrectl versions billing-agent
 localrectl release billing-agent latest
 ```
@@ -201,16 +202,24 @@ localrectl validate registry.yaml
 localrectl validate registry.yaml --artifacts dist/artifacts.json
 ```
 
-### `products`: find a product
+### `products`: list every product
 
-Without an option, lists every product of the server. Each option narrows the search, and a product must match all of them.
+Lists all the products of the server. Every page is read, so the list is complete.
 
 ```sh
 localrectl products
-localrectl products --query billing
-localrectl products --keyword vcs --keyword plugin
-localrectl products --label team=devtools --owner devtools@example.com
-localrectl products --updated-since 2026-01-01
+localrectl products -o json | jq -r '.products[].product'
+```
+
+### `products search`: find a product
+
+Searches the products by criteria. Each option narrows the search, and a product must match all of them.
+
+```sh
+localrectl products search --query billing
+localrectl products search --keyword vcs --keyword plugin
+localrectl products search --label team=devtools --owner devtools@example.com
+localrectl products search --updated-since 2026-01-01
 ```
 
 - `-Q, --query TEXT`: a text to find in the name, the display name or the description
@@ -224,15 +233,15 @@ localrectl products --updated-since 2026-01-01
 - `--sort KEY`: the order of the list
 - `--limit N`: how many products per page
 
-The server answers one page at a time. When more pages exist, `localrectl` tells you how to get the next one:
+A search returns one page. When more pages exist, `localrectl` tells you how to get the next one:
 
 - `-c, --cursor C`: read the page `C`
 - `--all`: read every page at once
 
 ```sh
-localrectl products --limit 20
-localrectl products --limit 20 --cursor <next>
-localrectl products --all
+localrectl products search --query plugin --limit 20
+localrectl products search --query plugin --limit 20 --cursor <next>
+localrectl products search --query plugin --all
 ```
 
 ### `versions`: list the versions of a product
