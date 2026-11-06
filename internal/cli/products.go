@@ -20,12 +20,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const productsEndpoint = "products"
+const (
+	productsEndpoint       = "products"
+	searchProductsEndpoint = "products/search"
+)
 
-const productDescription = `List and search the products of the server (GET <server-url>/products).
+const productsDescription = `List every product of the server (GET <server-url>/products).
 
-Without a criterion, every product is listed. Each criterion becomes a parameter of the
-search, and a product must match all of them:
+All the pages are read: the list is complete. To filter the products, or to read them one
+page at a time, use 'localrectl products search'.
+
+With -o json, the result is {"products": [...]}, each product as the server returns it.`
+
+const searchDescription = `Search the products of the server (GET <server-url>/products/search).
+
+Each criterion becomes a parameter of the search, and a product must match all of them:
 
   -Q, --query TEXT        q             text searched in the name, display name and description
   -k, --keyword K         keyword       a keyword of the product (repeat it: all must match)
@@ -61,9 +70,12 @@ type productsFlags struct {
 	all          bool
 }
 
+// productsCmd reads the products from one endpoint: the list or the search.
 type productsCmd struct {
-	cfg *config.Config
-	log *slog.Logger
+	cfg      *config.Config
+	log      *slog.Logger
+	endpoint string
+	action   string
 }
 
 type productSummary struct {
@@ -87,32 +99,64 @@ type productsResult struct {
 }
 
 func newProductsCommand() *cobra.Command {
-	var flags productsFlags
 	cmd := cobra.Command{
 		Use:   "products",
-		Short: "List and search the products",
-		Long:  productDescription,
-		Example: `  # Every product, one page
+		Short: "List every product",
+		Long:  productsDescription,
+		Example: `  # Every product
   localrectl products
 
-  # Every product, all the pages
-  localrectl products --all
+  # The names alone, with jq
+  localrectl products -o json | jq -r '.products[].product'
 
-  # A text search
-  localrectl products --query gitlab
+  # A search
+  localrectl products search --query gitlab`,
+		Args:    noArgs,
+		Aliases: []string{"products-all"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p := logging.From(cmd.Context())
+			cfg := config.From(cmd.Context())
+			if cfg == nil {
+				return errors.New("the configuration is not loaded")
+			}
+
+			this := newProductsCmd(cfg, p.Logger(), "products", productsEndpoint, "fetch the products")
+			result, err := this.runProducts(cmd, url.Values{}, true)
+			if err != nil {
+				return err
+			}
+			return this.displayResult(result, p)
+		},
+	}
+	cmd.AddCommand(newSearchCommand())
+
+	return &cmd
+}
+
+func newSearchCommand() *cobra.Command {
+	var flags productsFlags
+	cmd := cobra.Command{
+		Use:   "search",
+		Short: "Search the products by criteria",
+		Long:  searchDescription,
+		Example: `  # A text search
+  localrectl products search --query gitlab
+
+  # Every page of a search
+  localrectl products search --query plugin --all
 
   # The plugins with both keywords and a label
-  localrectl products --keyword vcs --keyword plugin --label team=devtools
+  localrectl products search --keyword vcs --keyword plugin --label team=devtools
 
   # The deprecated products of an owner
-  localrectl products --owner devtools@example.com --deprecated
+  localrectl products search --owner devtools@example.com --deprecated
 
   # Updated since the start of the year, 20 per page, then the next page
-  localrectl products --updated-since 2026-01-01 --limit 20
-  localrectl products --updated-since 2026-01-01 --limit 20 --cursor <next>
+  localrectl products search --updated-since 2026-01-01 --limit 20
+  localrectl products search --updated-since 2026-01-01 --limit 20 --cursor <next>
 
   # The names alone, with jq
-  localrectl products --all -o json | jq -r '.products[].product'`,
+  localrectl products search --query plugin --all -o json | jq -r '.products[].product'`,
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p := logging.From(cmd.Context())
@@ -126,7 +170,7 @@ func newProductsCommand() *cobra.Command {
 				return err
 			}
 
-			this := newProductsCmd(cfg, p.Logger())
+			this := newProductsCmd(cfg, p.Logger(), "products search", searchProductsEndpoint, "search the products")
 			result, err := this.runProducts(cmd, query, flags.all)
 			if err != nil {
 				return err
@@ -152,10 +196,12 @@ func newProductsCommand() *cobra.Command {
 	return &cmd
 }
 
-func newProductsCmd(cfg *config.Config, log *slog.Logger) *productsCmd {
+func newProductsCmd(cfg *config.Config, log *slog.Logger, name, endpoint, action string) *productsCmd {
 	return &productsCmd{
-		cfg: cfg,
-		log: log.With("cmd", "products"),
+		cfg:      cfg,
+		log:      log.With("cmd", name),
+		endpoint: endpoint,
+		action:   action,
 	}
 }
 
@@ -206,6 +252,7 @@ func (f *productsFlags) query(cmd *cobra.Command) (url.Values, error) {
 	return q, nil
 }
 
+// runProducts reads one page, or every page from the cursor of query when all is set.
 func (c *productsCmd) runProducts(cmd *cobra.Command, query url.Values, all bool) (*productsResult, error) {
 	result := &productsResult{Products: []json.RawMessage{}}
 	seen := map[string]bool{query.Get("cursor"): true}
@@ -217,7 +264,7 @@ func (c *productsCmd) runProducts(cmd *cobra.Command, query url.Values, all bool
 		for _, raw := range page.Items {
 			var s productSummary
 			if err := json.Unmarshal(raw, &s); err != nil {
-				return nil, fmt.Errorf("fetch the products: a product is not an object: %s", raw)
+				return nil, fmt.Errorf("%s: a product is not an object: %s", c.action, raw)
 			}
 			result.Products = append(result.Products, raw)
 			result.summaries = append(result.summaries, s)
@@ -227,7 +274,7 @@ func (c *productsCmd) runProducts(cmd *cobra.Command, query url.Values, all bool
 			return result, nil
 		}
 		if seen[page.Next] {
-			return nil, fmt.Errorf("fetch the products: the server returned the cursor %q twice", page.Next)
+			return nil, fmt.Errorf("%s: the server returned the cursor %q twice", c.action, page.Next)
 		}
 		seen[page.Next] = true
 		query.Set("cursor", page.Next)
@@ -236,7 +283,7 @@ func (c *productsCmd) runProducts(cmd *cobra.Command, query url.Values, all bool
 
 func (c *productsCmd) fetchPage(cmd *cobra.Command, query url.Values) (*productsPage, error) {
 	ctx := cmd.Context()
-	reqURL := c.cfg.Server.BaseUrl + "/" + productsEndpoint
+	reqURL := c.cfg.Server.BaseUrl + "/" + c.endpoint
 	if len(query) > 0 {
 		reqURL += "?" + query.Encode()
 	}
@@ -248,14 +295,14 @@ func (c *productsCmd) fetchPage(cmd *cobra.Command, query url.Values) (*products
 	}
 	start := time.Now()
 
-	resp, err := c.cfg.HttpClient().Get(ctx, productsEndpoint, &httpclient.RequestOptions{QueryParams: params})
+	resp, err := c.cfg.HttpClient().Get(ctx, c.endpoint, &httpclient.RequestOptions{QueryParams: params})
 	if err != nil {
 		var ce *httpclient.ClientError
 		if errors.As(err, &ce) && ce.Message != "" {
 			err = errors.New(ce.Message)
 		}
 		c.log.DebugContext(ctx, "request", "method", http.MethodGet, "url", reqURL, "err", err)
-		return nil, fmt.Errorf("fetch the products: %w", err)
+		return nil, fmt.Errorf("%s from %s: %w", c.action, reqURL, err)
 	}
 	defer resp.Body.Close()
 	c.log.DebugContext(ctx, "request", "method", http.MethodGet, "url", reqURL,
@@ -264,17 +311,17 @@ func (c *productsCmd) fetchPage(cmd *cobra.Command, query url.Values) (*products
 	if !httpclient.IsSuccess(resp) {
 		d, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
 		c.log.DebugContext(ctx, "response", "url", reqURL, "body", string(d))
-		return nil, fmt.Errorf("fetch the products from %s: %s", reqURL, resp.Status)
+		return nil, fmt.Errorf("%s from %s: %s", c.action, reqURL, resp.Status)
 	}
 
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("fetch the products from %s: %w", reqURL, err)
+		return nil, fmt.Errorf("%s from %s: %w", c.action, reqURL, err)
 	}
 	page, err := decodeProductsPage(b)
 	if err != nil {
 		c.log.DebugContext(ctx, "response", "url", reqURL, "err", err, "body", string(b[:min(len(b), 1<<10)]))
-		return nil, fmt.Errorf("fetch the products from %s: the response is not a list of products", reqURL)
+		return nil, fmt.Errorf("%s from %s: the response is not a list of products", c.action, reqURL)
 	}
 	return page, nil
 }
