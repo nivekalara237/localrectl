@@ -16,6 +16,8 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/nivekalara237/localrectl/internal/util"
 )
 
 type OptionParamItem struct {
@@ -28,12 +30,31 @@ type MultipartData struct {
 	Files  map[string]io.Reader // filename -> reader
 }
 
+// ProgressFunc receives the bytes transferred so far and the total, -1 when it is unknown.
+type ProgressFunc = util.ProgressFunc
+
 type RequestOptions struct {
 	QueryParams []OptionParamItem
 	Headers     []OptionParamItem
-	Body        any        // Pour JSON ou form
+	Body        any        // Pour JSON ou form. An io.Reader is streamed as is, never loaded in memory
 	Form        url.Values // pour application/x-www-form-urlencoded
 	Multipart   *MultipartData
+
+	// ContentType overrides the Content-Type of Body: application/json by default,
+	// application/octet-stream for an io.Reader.
+	ContentType string
+	// ContentLength is the size of an io.Reader Body. It is found alone for an *os.File and a
+	// reader with a Len method; without it, the body is sent chunked.
+	ContentLength int64
+	// UploadProgress reports the bytes of an io.Reader Body sent so far. It restarts from 0 on
+	// a retry.
+	UploadProgress ProgressFunc
+	// DownloadProgress reports the bytes of the response body read so far by the caller: read
+	// it as a stream (io.Copy), not with io.ReadAll. The cache is skipped.
+	DownloadProgress ProgressFunc
+	// NoRetry sends the request once, whatever WithRetry says: for a request that is not
+	// idempotent, which the caller retries itself.
+	NoRetry bool
 }
 
 type Option func(*Client)
@@ -173,8 +194,10 @@ func (c *Client) Do(ctx context.Context, method, path string, opts *RequestOptio
 		return nil, err
 	}
 
+	useCache := c.cache != nil && method == http.MethodGet && (opts == nil || opts.DownloadProgress == nil)
+
 	// If cache is enabled
-	if c.cache != nil && method == http.MethodGet {
+	if useCache {
 		cacheKey := reqURL.String() // inclut les query params
 		if data, ok := c.cache.Get(cacheKey); ok {
 			// Retourner une réponse simulée avec le corps caché
@@ -195,6 +218,7 @@ func (c *Client) Do(ctx context.Context, method, path string, opts *RequestOptio
 
 	//request body
 	var body io.Reader
+	var stream io.Reader
 	var contentType string
 	if opts != nil {
 		switch {
@@ -206,6 +230,9 @@ func (c *Client) Do(ctx context.Context, method, path string, opts *RequestOptio
 		case opts.Form != nil:
 			body = strings.NewReader(opts.Form.Encode())
 			contentType = "application/x-www-form-urlencoded"
+		case isStream(opts.Body):
+			stream = opts.Body.(io.Reader)
+			contentType = "application/octet-stream"
 		case opts.Body != nil:
 			var bs []byte
 			switch v := opts.Body.(type) {
@@ -215,11 +242,6 @@ func (c *Client) Do(ctx context.Context, method, path string, opts *RequestOptio
 				bs = v
 			case string:
 				bs = []byte(v)
-			case io.Reader:
-				bs, err = io.ReadAll(v)
-				if err != nil {
-					return nil, err
-				}
 			default:
 				bs, err = json.Marshal(v)
 				if err != nil {
@@ -229,12 +251,18 @@ func (c *Client) Do(ctx context.Context, method, path string, opts *RequestOptio
 			body = bytes.NewReader(bs)
 			contentType = "application/json"
 		}
+		if opts.ContentType != "" {
+			contentType = opts.ContentType
+		}
 	}
 
 	// Create the request
 	req, err := http.NewRequestWithContext(ctx, method, reqURL.String(), body)
 	if err != nil {
 		return nil, err
+	}
+	if stream != nil {
+		setStreamBody(req, stream, opts.ContentLength, opts.UploadProgress)
 	}
 
 	// Default headers
@@ -258,10 +286,22 @@ func (c *Client) Do(ctx context.Context, method, path string, opts *RequestOptio
 		req.Header.Set("Content-Type", contentType)
 	}
 
-	// Execute with retry
-	response, ferr := c.doWithRetry(req)
+	// A streamed transfer may last longer than the timeout of the client: only ctx stops it.
+	hc := c.httpClient
+	if stream != nil || (opts != nil && opts.DownloadProgress != nil) {
+		transfer := *hc
+		transfer.Timeout = 0
+		hc = &transfer
+	}
 
-	if c.cache != nil && ferr == nil && method == http.MethodGet && response.StatusCode == http.StatusOK {
+	// Execute with retry
+	response, ferr := c.doWithRetry(hc, req, opts != nil && opts.NoRetry)
+
+	if ferr == nil && opts != nil && opts.DownloadProgress != nil {
+		response.Body = util.NewProgressReader(response.Body, response.ContentLength, opts.DownloadProgress)
+	}
+
+	if useCache && ferr == nil && response.StatusCode == http.StatusOK {
 		cacheKey := reqURL.String()
 		bodyBytes, _ := io.ReadAll(response.Body)
 		response.Body.Close()
@@ -270,6 +310,56 @@ func (c *Client) Do(ctx context.Context, method, path string, opts *RequestOptio
 	}
 
 	return response, ferr
+}
+
+// isStream tells whether body is sent as a stream: an io.Reader, except the types encoded in
+// memory by Do.
+func isStream(body any) bool {
+	switch body.(type) {
+	case nil, []byte, string:
+		return false
+	}
+	_, ok := body.(io.Reader)
+	return ok
+}
+
+// setStreamBody makes r the body of req without reading it. The transport never closes r: the
+// caller does. When r is an io.Seeker, GetBody rewinds it, so a retry sends it again.
+func setStreamBody(req *http.Request, r io.Reader, size int64, progress ProgressFunc) {
+	if size <= 0 {
+		size = streamSize(r)
+	}
+	wrap := func() io.ReadCloser {
+		if progress == nil {
+			return io.NopCloser(r)
+		}
+		progress(0, size)
+		return io.NopCloser(util.NewProgressReader(r, size, progress))
+	}
+	req.Body = wrap()
+	req.ContentLength = size
+	req.GetBody = nil
+	if seeker, ok := r.(io.Seeker); ok {
+		req.GetBody = func() (io.ReadCloser, error) {
+			if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+				return nil, err
+			}
+			return wrap(), nil
+		}
+	}
+}
+
+// streamSize returns the size of r when it can be found, else -1.
+func streamSize(r io.Reader) int64 {
+	switch v := r.(type) {
+	case interface{ Len() int }:
+		return int64(v.Len())
+	case *os.File:
+		if info, err := v.Stat(); err == nil && info.Mode().IsRegular() {
+			return info.Size()
+		}
+	}
+	return -1
 }
 
 func encodeMultipart(data *MultipartData) (io.Reader, string, error) {
@@ -381,33 +471,27 @@ func (c *Client) buildURL(path string, opts *RequestOptions) (*url.URL, error) {
 	return u, nil
 }
 
-func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
-	var bodyBytes []byte
-	if req.Body != nil {
-		var err error
-		bodyBytes, err = io.ReadAll(req.Body)
-		req.Body.Close()
-		if err != nil {
-			return nil, err
-		}
+func (c *Client) doWithRetry(hc *http.Client, req *http.Request, noRetry bool) (*http.Response, error) {
+	// A body is sent again through GetBody: set by http.NewRequest for an in-memory body, and by
+	// setStreamBody for a seekable stream. Without it, the request is sent only once.
+	hasBody := req.Body != nil && req.Body != http.NoBody
+	maxRetries := c.retry.MaxRetries
+	if noRetry || (hasBody && req.GetBody == nil) {
+		maxRetries = 0
 	}
 	var lastErr error
 	var lastResponse *http.Response
-	for attempt := 0; attempt <= c.retry.MaxRetries; attempt++ {
-		// Cloner la requête pour réutiliser le corps (important si body non rejouable)
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		reqClone := req.Clone(req.Context())
-		if bodyBytes != nil {
-			// Réinitialiser le corps en le relisant depuis le buffer d'origine
-			// Ici, on suppose que le body est un *bytes.Reader ou *strings.Reader (réutilisable)
-			// Pour plus de robustesse, vous pouvez stocker le corps original et le réassigner.
-			reqClone.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			reqClone.ContentLength = int64(len(bodyBytes))
-			reqClone.GetBody = func() (io.ReadCloser, error) {
-				return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+		if attempt > 0 && hasBody {
+			body, err := req.GetBody()
+			if err != nil {
+				return nil, err
 			}
+			reqClone.Body = body
 		}
 
-		resp, err := c.httpClient.Do(reqClone)
+		resp, err := hc.Do(reqClone)
 		lastResponse = resp
 		if err == nil && !c.shouldRetry(resp) {
 			return resp, nil
@@ -422,7 +506,7 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 			lastErr = fmt.Errorf("retryable status: %s", resp.Status)
 		}
 
-		if attempt < c.retry.MaxRetries {
+		if attempt < maxRetries {
 			// Backoff exponentiel
 			wait := c.retry.Backoff * time.Duration(1<<attempt)
 			select {
