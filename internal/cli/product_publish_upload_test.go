@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -113,8 +114,11 @@ func TestPutDryRun(t *testing.T) {
 	if err := p.put(context.Background(), 1, 1, "a.tar.gz", writeAsset(t, "x")); err != nil {
 		t.Fatal(err)
 	}
-	if len(srv.requests) != 0 || errb.Len() != 0 {
-		t.Errorf("dry run sent %d requests, printed %q", len(srv.requests), errb.String())
+	if len(srv.requests) != 0 {
+		t.Errorf("dry run sent %d requests", len(srv.requests))
+	}
+	if line := errb.String(); !strings.HasPrefix(line, "[1/1] a.tar.gz  1 B  sha256 ") || !strings.HasSuffix(line, " (not sent: dry run)\n") {
+		t.Errorf("stderr = %q", line)
 	}
 	if p.totalSize != 1 {
 		t.Errorf("totalSize = %d, want the size that would be sent: 1", p.totalSize)
@@ -147,7 +151,7 @@ func TestUploadRefused(t *testing.T) {
 		want   string
 	}{
 		{http.StatusUnauthorized, "the upload token is missing or invalid: invalid or missing bearer token"},
-		{http.StatusForbidden, "upload refused: invalid or missing bearer token"},
+		{http.StatusForbidden, "refused by the server: invalid or missing bearer token"},
 		{http.StatusConflict, "the version is already published: invalid or missing bearer token"},
 		{http.StatusUnprocessableEntity, "upload a.tar.gz: invalid or missing bearer token"},
 	} {
@@ -348,5 +352,75 @@ func TestPutUsesTheGivenName(t *testing.T) {
 	}
 	if !strings.HasPrefix(errb.String(), "[5/5] registry.yaml ") {
 		t.Errorf("stderr = %q", errb.String())
+	}
+}
+
+func TestUploadsOrderAndNames(t *testing.T) {
+	p, _ := newUploadCmd(t, "http://127.0.0.1:1", token, 0)
+	files := []string{"/out/a.tar.gz", "/out/CHANGELOG.md", "/out/registry.yaml", "/out/b.zip"}
+
+	got, err := p.uploads(files, "/src/card.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Without --changelog-file, the CHANGELOG.md of the directory is sent as any other file.
+	want := []upload{{"a.tar.gz", "/out/a.tar.gz"}, {"CHANGELOG.md", "/out/CHANGELOG.md"}, {"b.zip", "/out/b.zip"},
+		{"registry.yaml", "/src/card.yaml"}}
+	if !slices.Equal(got, want) {
+		t.Errorf("uploads = %v\nwant      %v", got, want)
+	}
+
+	p.pFlags.changelog = "/src/NOTES.md"
+	got, err = p.uploads(files, "/src/card.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = []upload{{"a.tar.gz", "/out/a.tar.gz"}, {"b.zip", "/out/b.zip"},
+		{"registry.yaml", "/src/card.yaml"}, {"CHANGELOG.md", "/src/NOTES.md"}}
+	if !slices.Equal(got, want) {
+		t.Errorf("uploads = %v\nwant      %v", got, want)
+	}
+}
+
+func TestUploadsChangelogExpanded(t *testing.T) {
+	p, _ := newUploadCmd(t, "http://127.0.0.1:1", token, 0)
+	t.Setenv("HOME", "/home/me")
+
+	p.pFlags.changelog = "~/NOTES.md"
+	got, err := p.uploads(nil, "card.yaml")
+	if err != nil || got[len(got)-1] != (upload{"CHANGELOG.md", "/home/me/NOTES.md"}) {
+		t.Errorf("uploads = %v, %v", got, err)
+	}
+
+	p.pFlags.changelog = "~other/NOTES.md"
+	if _, err := p.uploads(nil, "card.yaml"); err == nil || !strings.Contains(err.Error(), "--changelog-file") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestNoValidateSkipsTheChecks(t *testing.T) {
+	// A nil validateCmd panics if it is called: --no-validate must not call it.
+	f := publishFlags{noValidate: true, productFile: "missing.yaml"}
+	if err := f.validateProductCard(context.Background(), nil); err != nil {
+		t.Errorf("product card: %v", err)
+	}
+	if err := f.validateGoReleaseFile(context.Background(), nil, "missing.json"); err != nil {
+		t.Errorf("artifacts.json: %v", err)
+	}
+}
+
+func TestNoValidateWarns(t *testing.T) {
+	isolate(t)
+	card := writeAsset(t, "name: billing\n")
+	var errb bytes.Buffer
+	log := logging.NewPrinter(io.Discard, &errb, logging.Options{NoColor: true}).Logger()
+	f := publishFlags{noValidate: true, productFile: card, version: "1.2.0", parallel: 1, compressSubdirType: "tar.gz"}
+
+	// No server: the checks would fail to fetch the rules.
+	if err := f.validateFlags("billing", log, context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errb.String(), "--no-validate") {
+		t.Errorf("no warning: %q", errb.String())
 	}
 }

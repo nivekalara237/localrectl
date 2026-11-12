@@ -7,13 +7,18 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/nivekalara237/localrectl/config"
 	"github.com/nivekalara237/localrectl/internal/httpclient"
@@ -29,7 +34,9 @@ type publishCmd struct {
 	pFlags  *publishFlags
 	pName   string
 
-	totalSize int64 // bytes uploaded so far
+	totalSize int64    // bytes uploaded so far
+	tmpDir    string   // the directory of the archives of --compress-subdirs, created at the first one
+	tmpPaths  []string // temporary files and directories, removed by tmpCleanup
 }
 
 type summary struct {
@@ -41,35 +48,38 @@ type summary struct {
 }
 
 type publishFlags struct {
-	/*Fait aussi de cette version la latest du produit*/
+	// latest also makes this version the latest one of the product.
 	latest bool
-	/*Affiche ce qui serait envoyé, sans rien envoyer (pas besoin de token)*/
+	// dryRun shows what would be sent, and sends nothing: no token needed.
 	dryRun bool
-	/*Dossier auquel les chemins d'artifacts.json sont relatifs*/
+	// root is the directory of the files to send, and the one the paths of artifacts.json are
+	// relative to.
 	root string
-	/*Version à publier. Par défaut : tag, sinon version, de metadata.json*/
-	version             string
+	// version is the version to publish. By default, the version, else the tag, of metadata.json.
+	version string
+	// isNotSemverStandard accepts a version that is not X.Y.Z or X.Y.Z-pre.
 	isNotSemverStandard bool
-	/*La fiche produit registry.yaml. Par défaut, celle de la racine, sinon celle du dossier courant*/
+	// productFile is the product card, sent as registry.yaml.
 	productFile string
 
-	/*CHANGELOG.md à envoyer. Par défaut, celui qui est à côté d'artifacts.json*/
+	// changelog is the CHANGELOG.md to send with the version.
 	changelog string
-	/*Fichiers d'un DIR à ne pas envoyer (*.log, .DS_Store)*/
+	// excludes are the files of the root directory not to send (*.log, .DS_Store).
 	excludes []string
-	/*Envois en parallèle (4 par défaut)*/
+	// parallel is the number of files sent at the same time.
 	parallel int
-	/*Saute la validation locale, faite par défaut avant tout envoi*/
+	// noValidate skips the checks made before anything is sent.
 	noValidate bool
-	/*Que faire si la version existe déjà : échec (par défaut), ou succès sans rien faire, pour rejouer une CI sans erreur*/
+	// ifExists tells what to do when the version is already published: fail (the default), or
+	// succeed without doing anything, to run a CI job again without an error.
 	ifExists ifExists
 
-	// for GoReleaser
+	// For GoReleaser
 	goReleaserArtifactsFile string
 	goReleaserMetadataFile  string
-	goReleaserDir           string // if set, not need goReleaserArtifactsFile and goReleaserMetadataFile
+	goReleaserDir           string // when set, goReleaserArtifactsFile and goReleaserMetadataFile are found in it
 
-	// directory walking
+	// Directory walking
 	skipSubdirectories     bool
 	compressSubdirectories bool
 	compressSubdirType     string
@@ -81,8 +91,15 @@ var (
 	skip ifExists = "skip"
 )
 
-var (
-	productPublishEndpoint = "/products/publish"
+const (
+	productPublishEndpoint = "%s/artifacts/%s/publish"
+	productUploadEndpoint  = "%s/artifacts/%s/files/%s"
+)
+
+// The names the server reads the product card and the changelog by.
+const (
+	productCardName = "registry.yaml"
+	changelogName   = "CHANGELOG.md"
 )
 
 var reservedFilenames = []string{
@@ -93,25 +110,20 @@ var reservedFilenames = []string{
 var artifactSupportedFileTypes = []string{"Archive", "File", "Source", "Linux Package", "Checksum",
 	"Signature", "Certificate", "SBOM", "Metadata"}
 
-var pflags publishFlags
-
-// tmpPaths holds the temporary files and directories created while the command runs. They stay
-// on disk until the upload is done, then tmpCleanup removes them.
-var tmpPaths []string
-
 // addTmpPath records a temporary file or directory for tmpCleanup.
-func addTmpPath(path string) {
-	tmpPaths = append(tmpPaths, path)
+func (p *publishCmd) addTmpPath(path string) {
+	p.tmpPaths = append(p.tmpPaths, path)
 }
 
-// tmpCleanup removes every temporary file and directory recorded by addTmpPath.
-func tmpCleanup(log *slog.Logger) {
-	for _, path := range tmpPaths {
+// tmpCleanup removes every temporary file and directory recorded by addTmpPath. They stay on
+// disk until the upload is done.
+func (p *publishCmd) tmpCleanup() {
+	for _, path := range p.tmpPaths {
 		if err := os.RemoveAll(path); err != nil {
-			log.Warn("unable to remove a temporary path", "path", path, "error", err)
+			p.log.Warn("unable to remove a temporary path", "path", path, "error", err)
 		}
 	}
-	tmpPaths = nil
+	p.tmpPaths = nil
 }
 
 func newPublishCmd(pName string, printer *logging.Printer, cfg *config.Config, pf publishFlags) *publishCmd {
@@ -125,36 +137,74 @@ func newPublishCmd(pName string, printer *logging.Printer, cfg *config.Config, p
 }
 
 func newProductPublishCommand() *cobra.Command {
+	flags := &publishFlags{}
 	cmd := cobra.Command{
-		Use:     "publish",
-		Short:   "Publish a version of the product",
-		Long:    "",
-		Example: "",
+		Use:   "publish <product-name>",
+		Short: "Upload the files of a new version of a product, then publish it",
+		Long: `Upload the files of a new version of a product to the server, then publish it
+(PUT <server-url>/<product-name>/artifacts/<version>/files/<name> for each file, then
+POST <server-url>/<product-name>/artifacts/<version>/publish).
+
+The files come from one of two places:
+  - a goreleaser build: the files listed in its artifacts.json, with artifacts.json and
+    metadata.json. It is used with --goreleaser-dir or --goreleaser-artifacts-file, or when
+    the root directory holds an artifacts.json;
+  - a plain directory, --root (the current directory by default): every regular file in it.
+    A sub directory fails, unless --skip-subdirs skips it or --compress-subdirs sends it as
+    one archive.
+
+The product card, --product-file, is checked against the rules of the server, then sent as
+registry.yaml. Every file is sent with its sha256, and the server checks it.
+
+Publishing needs the upload token: set LOCAL_REGISTRY_UPLOAD_TOKEN, or server.upload-token in
+the config file. --dry-run shows what would be sent, sends nothing and needs no token.
+
+A published version never changes: publishing it again fails with "already published".`,
+		Example: `  # The files of a directory
+  localrectl publish billing-agent --root ./out --version 1.2.0 --product-file registry.yaml
+
+  # A goreleaser build, made the latest version of the product
+  localrectl publish billing-agent --goreleaser-dir dist --version 1.2.0 --product-file registry.yaml --latest
+
+  # Each sub directory of ./out sent as a zip archive
+  localrectl publish billing-agent --root ./out --version 1.2.0 --product-file registry.yaml \
+    --compress-subdirs --compress-type zip
+
+  # What would be sent, without sending anything
+  localrectl publish billing-agent --root ./out --version 1.2.0 --product-file registry.yaml --dry-run`,
 		Aliases: []string{"product-publish"},
-		Args:    withArgs(1),
+		Args:    productNameArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p := logging.From(cmd.Context())
-			defer tmpCleanup(p.Logger())
-
 			cfg := config.From(cmd.Context())
 			if cfg == nil {
-				return errors.New("unable to load config")
+				return errors.New("unable to load the configuration")
 			}
+			pname := args[0]
 
-			pname := ""
-			if len(args) > 0 {
-				pname = args[0]
-			}
+			// Ctrl+C or SIGTERM cancels the requests, so the command returns and its deferred
+			// cleanup runs. Once caught, the signals get their default action back: a second
+			// Ctrl+C stops the command at once.
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			go func() {
+				<-ctx.Done()
+				stop()
+			}()
+			cmd.SetContext(ctx)
 
 			validationCmd := newValidateCmd(cfg, p.Logger())
 
-			err := pflags.validateFlags(pname, p.Logger(), cmd.Context(), validationCmd)
+			err := flags.validateFlags(pname, p.Logger(), ctx, validationCmd)
 			if err != nil {
 				return err
 			}
-			pflags.postValidateFlags(p.Logger(), cmd.Context(), validationCmd)
+			if err := flags.postValidateFlags(p.Logger(), ctx, validationCmd); err != nil {
+				return err
+			}
 
-			pcmd := newPublishCmd(pname, p, cfg, pflags)
+			pcmd := newPublishCmd(pname, p, cfg, *flags)
+			defer pcmd.tmpCleanup()
 			proceed, err := pcmd.processPublish(cmd)
 			if err != nil {
 				return err
@@ -167,45 +217,48 @@ func newProductPublishCommand() *cobra.Command {
 		},
 	}
 
-	setFlagSet(&cmd)
+	setFlagSet(&cmd, flags)
 
 	return &cmd
 }
 
-func setFlagSet(cmd *cobra.Command) {
+func setFlagSet(cmd *cobra.Command, pflags *publishFlags) {
 	flagSet := cmd.Flags()
-	flagSet.StringVar(&pflags.version, "version", "", "")
-	flagSet.StringVar(&pflags.productFile, "product-file", "", "")
-	flagSet.StringVarP(&pflags.root, "root", "R", "", "")
-	flagSet.StringVar(&pflags.changelog, "changelog-file", "", "")
-	flagSet.StringVar((*string)(&pflags.ifExists), "if-exists", "", "")
-	flagSet.IntVar(&pflags.parallel, "parallel", 4, "")
-	flagSet.BoolVar(&pflags.latest, "latest", false, "")
-	flagSet.BoolVar(&pflags.isNotSemverStandard, "no-semver-standard", false, "")
-	flagSet.BoolVar(&pflags.dryRun, "dry-run", false, "")
-	flagSet.BoolVar(&pflags.noValidate, "no-validate", false, "")
-	flagSet.StringArrayVar(&pflags.excludes, "exclude", nil, "")
-	flagSet.StringVar(&pflags.goReleaserArtifactsFile, "goreleaser-artifacts-file", "", "")
-	flagSet.StringVar(&pflags.goReleaserMetadataFile, "goreleaser-metadata-file", "", "")
-	flagSet.StringVar(&pflags.goReleaserDir, "goreleaser-dir", "", "")
+	flagSet.StringVar(&pflags.version, "version", "", "Version to publish: X.Y.Z or X.Y.Z-pre, such as 1.2.0-rc.1 (default: the tag, else the version, of metadata.json)")
+	flagSet.StringVar(&pflags.productFile, "product-file", "", "Product card to check, then send as registry.yaml")
+	flagSet.StringVarP(&pflags.root, "root", "R", "", "Directory of the files to send (default: the current directory)")
+	flagSet.StringVar(&pflags.changelog, "changelog-file", "", "Changelog to send with the version")
+	flagSet.StringVar((*string)(&pflags.ifExists), "if-exists", "", "When the version is already published: fail, or skip to succeed without sending anything")
+	flagSet.IntVar(&pflags.parallel, "parallel", 4, "Number of files sent at the same time")
+	flagSet.BoolVar(&pflags.latest, "latest", false, "Also make this version the latest one of the product")
+	flagSet.BoolVar(&pflags.isNotSemverStandard, "no-semver-standard", false, "Accept a version that is not X.Y.Z or X.Y.Z-pre, such as v1.2.0")
+	flagSet.BoolVar(&pflags.dryRun, "dry-run", false, "Show what would be sent, without sending anything (no token needed)")
+	flagSet.BoolVar(&pflags.noValidate, "no-validate", false, "Skip the checks of the product card and of artifacts.json")
+	flagSet.StringArrayVar(&pflags.excludes, "exclude", nil, "File of the root directory not to send, such as '*.log' (repeatable)")
+	flagSet.StringVar(&pflags.goReleaserArtifactsFile, "goreleaser-artifacts-file", "", "artifacts.json of a goreleaser build")
+	flagSet.StringVar(&pflags.goReleaserMetadataFile, "goreleaser-metadata-file", "", "metadata.json of a goreleaser build")
+	flagSet.StringVar(&pflags.goReleaserDir, "goreleaser-dir", "", "Directory of a goreleaser build (dist), with its artifacts.json and metadata.json")
 
-	flagSet.BoolVar(&pflags.skipSubdirectories, "skip-subdirs", false, "")
-	flagSet.BoolVar(&pflags.compressSubdirectories, "compress-subdirs", false, "")
-	flagSet.StringVar(&pflags.compressSubdirType, "compress-type", "tar.gz", "")
+	flagSet.BoolVar(&pflags.skipSubdirectories, "skip-subdirs", false, "Skip the sub directories of the root directory")
+	flagSet.BoolVar(&pflags.compressSubdirectories, "compress-subdirs", false, "Send each sub directory of the root directory as one archive")
+	flagSet.StringVar(&pflags.compressSubdirType, "compress-type", "tar.gz", "Archive format of --compress-subdirs: tar.gz or zip")
 
 	_ = cmd.MarkFlagRequired("product-file")
-	_ = cmd.MarkFlagRequired("version")
 }
 
 func (f *publishFlags) validateProductCard(ctx context.Context, vCmd *validateCmd) error {
+	if f.noValidate {
+		return nil
+	}
 	problems, err := vCmd.validateProductFile(ctx, f.productFile)
 	if err != nil {
 		return err
 	}
 	if len(problems) > 0 {
 		b := strings.Builder{}
+		_, _ = fmt.Fprintf(&b, "the product card %s is not valid:", f.productFile)
 		for _, p := range problems {
-			b.WriteString(fmt.Sprintf("%s: %s\n", p.Key, p.Message))
+			_, _ = fmt.Fprintf(&b, "\n  %s: %s", p.Key, p.Message)
 		}
 		return errors.New(b.String())
 	}
@@ -213,11 +266,15 @@ func (f *publishFlags) validateProductCard(ctx context.Context, vCmd *validateCm
 }
 
 func (f *publishFlags) validateGoReleaseFile(ctx context.Context, vCmd *validateCmd, file string) error {
+	if f.noValidate {
+		return nil
+	}
 	problems := vCmd.validateArtifacts(ctx, file)
 	if len(problems) > 0 {
 		b := strings.Builder{}
+		_, _ = fmt.Fprintf(&b, "%s is not valid:", file)
 		for _, p := range problems {
-			b.WriteString(fmt.Sprintf("%s: %s\n", p.Key, p.Message))
+			_, _ = fmt.Fprintf(&b, "\n  %s: %s", p.Key, p.Message)
 		}
 		return errors.New(b.String())
 	}
@@ -235,42 +292,50 @@ func (p *publishCmd) isGoReleaserBuilds() bool {
 	return p.pFlags.goReleaserDir != "" || p.pFlags.goReleaserArtifactsFile != ""
 }
 
-func fileExists(path string) (bool, string) {
-	p, _ := config.ExpandPath(path)
-	_, err := os.ReadFile(p)
+// fileExists checks that path, after ~ is expanded, is a file; what names it in the error.
+func fileExists(what, path string) error {
+	p, err := config.ExpandPath(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, "the %s file: %s doesn't exist"
-		}
-		return false, err.Error()
+		return fmt.Errorf("the %s file %s: %w", what, path, err)
 	}
-	return true, ""
+	info, err := os.Stat(p)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("the %s file %s does not exist", what, path)
+	case err != nil:
+		return fmt.Errorf("the %s file %s cannot be read: %w", what, path, err)
+	case info.IsDir():
+		return fmt.Errorf("the %s file %s is a directory", what, path)
+	}
+	return nil
 }
 
 func (f *publishFlags) validateFlags(pName string, logger *slog.Logger, ctx context.Context, vCmd *validateCmd) error {
-	if f.ifExists != "" && (f.ifExists != fail || f.ifExists != skip) {
-		return errors.New("--if-exists option must be skip or fail")
+	if f.ifExists != "" && f.ifExists != fail && f.ifExists != skip {
+		return fmt.Errorf("--if-exists must be fail or skip, not %q", f.ifExists)
 	}
 
 	if f.parallel < 1 {
-		return errors.New("the parallel option must be eager than 1")
+		return fmt.Errorf("--parallel must be 1 or more, not %d", f.parallel)
+	}
+
+	if f.noValidate {
+		logger.WarnContext(ctx, "--no-validate: the product card and artifacts.json are not checked before they are sent")
 	}
 
 	if f.changelog != "" {
-		ok, errf := fileExists(f.changelog)
-		if !ok {
-			return fmt.Errorf(errf, "changelog", f.changelog)
+		if err := fileExists("changelog", f.changelog); err != nil {
+			return err
 		}
 	}
 
 	if f.productFile == "" {
-		return errors.New("the product card is required")
+		return errors.New("the product card is required: pass --product-file")
 	}
 
 	if f.productFile != "" {
-		ok, errf := fileExists(f.productFile)
-		if !ok {
-			return fmt.Errorf(errf, "product card", f.productFile)
+		if err := fileExists("product card", f.productFile); err != nil {
+			return err
 		}
 		errp := f.validateProductCard(ctx, vCmd)
 		if errp != nil {
@@ -284,33 +349,30 @@ func (f *publishFlags) validateFlags(pName string, logger *slog.Logger, ctx cont
 			return err
 		}
 		if !exist {
-			return errors.New(f.root + " not exists")
+			return fmt.Errorf("--root %s is not a directory", f.root)
 		}
 	}
 
 	if f.compressSubdirType != "" {
 		available := []string{"zip", "tar.gz"}
 		if !slices.Contains(available, strings.ToLower(f.compressSubdirType)) {
-			return fmt.Errorf("compress type must one of %s", strings.Join(available, ","))
+			return fmt.Errorf("--compress-type must be %s, not %q", strings.Join(available, " or "), f.compressSubdirType)
 		}
 	}
 
-	if f.version == "" {
-		return errors.New("the version (--version) is required")
-	}
-
+	// Without --version, the version comes from the metadata.json of a goreleaser build:
+	// processPublish checks that it has one.
 	if f.version != "" && !f.isNotSemverStandard {
 		// 	[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || die "--version $version is not X.Y.Z or X.Y.Z-pre"
-		regx := regexp.MustCompile("^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$")
+		regx := regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
 		if !regx.Match([]byte(f.version)) {
-			return errors.New("--version is not X.Y.Z or X.Y.Z-alpha.1")
+			return fmt.Errorf("--version %s is not X.Y.Z or X.Y.Z-pre, such as 1.2.0-rc.1: pass --no-semver-standard to accept it", f.version)
 		}
 	}
 
 	if f.goReleaserDir == "" && f.goReleaserArtifactsFile != "" {
-		ok, errf := fileExists(f.goReleaserArtifactsFile)
-		if !ok {
-			return fmt.Errorf(errf, "GoReleaser artifacts", f.goReleaserArtifactsFile)
+		if err := fileExists("goreleaser artifacts", f.goReleaserArtifactsFile); err != nil {
+			return err
 		}
 		errp := f.validateGoReleaseFile(ctx, vCmd, f.goReleaserArtifactsFile)
 		if errp != nil {
@@ -319,35 +381,32 @@ func (f *publishFlags) validateFlags(pName string, logger *slog.Logger, ctx cont
 	}
 
 	if f.goReleaserDir == "" && f.goReleaserMetadataFile != "" {
-		ok, errf := fileExists(f.goReleaserMetadataFile)
-		if !ok {
-			return fmt.Errorf(errf, "GoReleaser metadata", f.goReleaserMetadataFile)
+		if err := fileExists("goreleaser metadata", f.goReleaserMetadataFile); err != nil {
+			return err
 		}
 	}
 
 	if f.goReleaserDir != "" {
 		if f.goReleaserArtifactsFile != "" {
-			logger.Warn("GoReleaser: --goreleaser-artifacts-file will be ignored as --goreleaser-dir is set")
+			logger.Warn("--goreleaser-artifacts-file is ignored: --goreleaser-dir is set")
 		}
 		if f.goReleaserMetadataFile != "" {
-			logger.Warn("GoReleaser: --goreleaser-metadata-file will be ignored as --goreleaser-dir is set")
+			logger.Warn("--goreleaser-metadata-file is ignored: --goreleaser-dir is set")
 		}
 
 		exist, err := dirExists(f.goReleaserDir)
 		if err != nil {
-			return fmt.Errorf("GoReleaser: %w", err)
+			return fmt.Errorf("--goreleaser-dir: %w", err)
 		}
 		if !exist {
-			return fmt.Errorf("GoReleaser: %s not exists", f.goReleaserDir)
+			return fmt.Errorf("--goreleaser-dir %s is not a directory", f.goReleaserDir)
 		}
 
-		ok, _ := fileExists(f.goReleaserDir + "/artifacts.json")
-		if !ok {
-			return fmt.Errorf("GoReleaser: %s/artifacts.json no found", f.goReleaserDir)
+		if fileExists("", f.goReleaserDir+"/artifacts.json") != nil {
+			return fmt.Errorf("--goreleaser-dir: no artifacts.json in %s", f.goReleaserDir)
 		}
-		ok, _ = fileExists(f.goReleaserDir + "/metadata.json")
-		if !ok {
-			return fmt.Errorf("GoReleaser: %s/metadata.json no found", f.goReleaserDir)
+		if fileExists("", f.goReleaserDir+"/metadata.json") != nil {
+			return fmt.Errorf("--goreleaser-dir: no metadata.json in %s", f.goReleaserDir)
 		}
 
 		errp := f.validateGoReleaseFile(ctx, vCmd, fmt.Sprintf("%s/artifacts.json", f.goReleaserDir))
@@ -359,24 +418,22 @@ func (f *publishFlags) validateFlags(pName string, logger *slog.Logger, ctx cont
 	return nil
 }
 
-func (f *publishFlags) postValidateFlags(logger *slog.Logger, ctx context.Context, vCmd *validateCmd) {
+// postValidateFlags switches to a goreleaser build when the root directory holds an
+// artifacts.json. An artifacts.json that is not valid fails: it is not sent as a plain file.
+func (f *publishFlags) postValidateFlags(logger *slog.Logger, ctx context.Context, vCmd *validateCmd) error {
 	root := f.safeRoot()
 	if f.goReleaserArtifactsFile == "" && f.goReleaserDir == "" {
 		af := fmt.Sprintf("%s/artifacts.json", root)
-		artifactsExist, _ := fileExists(af)
-		if artifactsExist {
+		if fileExists("", af) == nil {
 			logger.InfoContext(ctx, "artifacts.json found in the root directory")
-			err := f.validateGoReleaseFile(ctx, vCmd, af)
-			if err != nil {
-				logger.ErrorContext(ctx, "root/artifacts", "permissive", "true", "error", err)
-			} else {
-				f.goReleaserArtifactsFile = af
+			if err := f.validateGoReleaseFile(ctx, vCmd, af); err != nil {
+				return fmt.Errorf("the root directory holds an artifacts.json: %w", err)
 			}
+			f.goReleaserArtifactsFile = af
 			f.goReleaserDir = root
 			if f.goReleaserMetadataFile == "" {
 				mf := fmt.Sprintf("%s/metadata.json", root)
-				medataExist, _ := fileExists(mf)
-				if medataExist {
+				if fileExists("", mf) == nil {
 					logger.InfoContext(ctx, "metadata.json found in the root directory")
 					f.goReleaserMetadataFile = mf
 				}
@@ -388,6 +445,7 @@ func (f *publishFlags) postValidateFlags(logger *slog.Logger, ctx context.Contex
 		f.goReleaserArtifactsFile = fmt.Sprintf("%s/artifacts.json", f.goReleaserDir)
 		f.goReleaserMetadataFile = fmt.Sprintf("%s/metadata.json", f.goReleaserDir)
 	}
+	return nil
 }
 
 func dirExists(path string) (bool, error) {
@@ -395,7 +453,7 @@ func dirExists(path string) (bool, error) {
 	info, err := os.Stat(p)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return false, fmt.Errorf("'%s' directory doesn't exists", path)
+			return false, fmt.Errorf("the directory %s does not exist", path)
 		}
 		return false, err
 	}
@@ -409,7 +467,7 @@ func (p *publishCmd) put(ctx context.Context, no, total int, name, path string) 
 	if err != nil {
 		return err
 	}
-	p.log.Debug("PUT", "no", no, "name", name, "path", path, "checksum", checksum)
+	p.log.DebugContext(ctx, "PUT", "no", no, "name", name, "path", path, "checksum", checksum)
 	if p.pFlags.dryRun {
 		// Nothing is sent: count the size that would be.
 		info, err := os.Stat(path)
@@ -417,6 +475,8 @@ func (p *publishCmd) put(ctx context.Context, no, total int, name, path string) 
 			return err
 		}
 		p.totalSize += info.Size()
+		_, _ = fmt.Fprintf(p.printer.Err, "[%d/%d] %s  %s  sha256 %s (not sent: dry run)\n", no, total, name,
+			humanBytes(info.Size()), checksum)
 		return nil
 	}
 	return p.httpUpload(ctx, fmt.Sprintf("[%d/%d] %s", no, total, name), name, path, checksum)
@@ -441,7 +501,7 @@ func (p *publishCmd) httpUpload(ctx context.Context, label, name, path, checksum
 		return err
 	}
 
-	endpoint := fmt.Sprintf("%s/artifacts/%s/files/%s", p.pName, p.pFlags.version, name)
+	endpoint := fmt.Sprintf(productUploadEndpoint, p.pName, p.pFlags.version, name)
 	progress := newProgressBar(p.printer.Err, label, p.printer.UseColor())
 
 	resp, err := p.cfg.HttpClient().Put(ctx, endpoint, &httpclient.RequestOptions{
@@ -460,8 +520,13 @@ func (p *publishCmd) httpUpload(ctx context.Context, label, name, path, checksum
 	defer func() { _ = resp.Body.Close() }()
 
 	if !httpclient.IsSuccess(resp) {
-		progress.Fail()
-		return fmt.Errorf("upload %s: %s", name, serverRefusal(resp))
+		refusal := serverRefusal(resp)
+		if p.pFlags.ifExists == skip && errors.Is(refusal, errAlreadyPublished) {
+			progress.Skip()
+		} else {
+			progress.Fail()
+		}
+		return fmt.Errorf("upload %s: %w", name, refusal)
 	}
 	p.totalSize += info.Size()
 	progress.Done()
@@ -493,22 +558,47 @@ func (p *publishCmd) httpPublishCall(ctx context.Context) error {
 		return err
 	}
 
-	endpoint := fmt.Sprintf("%s/artifacts/%s/publish", p.pName, p.pFlags.version)
-	resp, err := p.cfg.HttpClient().Post(ctx, endpoint, &httpclient.RequestOptions{
+	endpoint := fmt.Sprintf(productPublishEndpoint, p.pName, p.pFlags.version)
+	opts := &httpclient.RequestOptions{
 		QueryParams: []httpclient.OptionParamItem{
 			httpclient.NewRequestOption("latest", strconv.FormatBool(p.pFlags.latest)),
 		},
 		Headers: []httpclient.OptionParamItem{
 			httpclient.NewRequestOption("Authorization", "Bearer "+token),
 		},
-	})
+		// Publishing is not idempotent: it is retried here, to know when an attempt is a retry.
+		NoRetry: true,
+	}
+	var resp *http.Response
+	attempt := 0
+	for ; ; attempt++ {
+		resp, err = p.cfg.HttpClient().Post(ctx, endpoint, opts)
+		var ce *httpclient.ClientError
+		if err == nil || !errors.As(err, &ce) || !ce.Retryable() || ctx.Err() != nil || attempt >= p.cfg.Retries {
+			break
+		}
+		p.log.WarnContext(ctx, "publish failed, retried", "attempt", attempt+1, "error", err)
+		select {
+		case <-time.After(time.Second << attempt):
+		case <-ctx.Done():
+			return fmt.Errorf("publish %s %s: %w", p.pName, p.pFlags.version, ctx.Err())
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("publish %s %s: %w", p.pName, p.pFlags.version, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if !httpclient.IsSuccess(resp) {
-		return fmt.Errorf("publish %s %s: %s", p.pName, p.pFlags.version, serverRefusal(resp))
+		refusal := serverRefusal(resp)
+		// The answer of a previous attempt may have been lost after the server published.
+		if attempt > 0 && errors.Is(refusal, errAlreadyPublished) {
+			if published, err := p.isPublished(ctx); err == nil && published {
+				p.log.InfoContext(ctx, "version published by a previous attempt", "product", p.pName, "version", p.pFlags.version)
+				return nil
+			}
+		}
+		return fmt.Errorf("publish %s %s: %w", p.pName, p.pFlags.version, refusal)
 	}
 	var published publishedVersion
 	if err := json.NewDecoder(resp.Body).Decode(&published); err != nil {
@@ -519,9 +609,13 @@ func (p *publishCmd) httpPublishCall(ctx context.Context) error {
 	return nil
 }
 
+// errAlreadyPublished tells that the version is already published: a published version never
+// changes.
+var errAlreadyPublished = errors.New("the version is already published")
+
 // serverRefusal explains a refused upload or publish, with the {"error": "..."} message of the
-// server.
-func serverRefusal(resp *http.Response) string {
+// server. A 409 wraps errAlreadyPublished.
+func serverRefusal(resp *http.Response) error {
 	var body struct {
 		Error string `json:"error"`
 	}
@@ -531,18 +625,66 @@ func serverRefusal(resp *http.Response) string {
 	}
 	switch resp.StatusCode {
 	case http.StatusUnauthorized:
-		return "the upload token is missing or invalid: " + msg
+		return errors.New("the upload token is missing or invalid: " + msg)
 	case http.StatusForbidden:
-		return "upload refused: " + msg
+		return errors.New("refused by the server: " + msg)
 	case http.StatusConflict:
-		return "the version is already published: " + msg
+		return fmt.Errorf("%w: %s", errAlreadyPublished, msg)
 	}
-	return msg
+	return errors.New(msg)
+}
+
+// sendsTokenInClear tells whether the token goes over plain http to another machine: http to
+// localhost or a loopback address stays on this machine.
+func sendsTokenInClear(serverURL string) bool {
+	u, err := url.Parse(serverURL)
+	if err != nil || u.Scheme != "http" {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || !ip.IsLoopback()
+}
+
+// isPublished tells whether the version is already published, with a GET of its release.json:
+// 200 when it is, 404 when it is not (nor the product, before its first version). It needs no
+// token.
+func (p *publishCmd) isPublished(ctx context.Context) (bool, error) {
+	endpoint := fmt.Sprintf(productReleaseEndpoint, p.pName, p.pFlags.version)
+	resp, err := p.cfg.HttpClient().Get(ctx, endpoint, nil)
+	if err != nil {
+		// A network error comes as a fake 500: its message is the cause.
+		var ce *httpclient.ClientError
+		if errors.As(err, &ce) && ce.Message != "" {
+			err = errors.New(ce.Message)
+		}
+		return false, fmt.Errorf("check whether %s %s is published: %w", p.pName, p.pFlags.version, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		return false, nil
+	case httpclient.IsSuccess(resp):
+		return true, nil
+	}
+	return false, fmt.Errorf("check whether %s %s is published: %s", p.pName, p.pFlags.version, resp.Status)
+}
+
+// skipped is the summary of --if-exists skip on a published version: sent counts the files sent
+// before the server answered "already published".
+func (p *publishCmd) skipped(ctx context.Context, sent int, reason error) *summary {
+	p.log.InfoContext(ctx, "the version is already published: nothing more sent (--if-exists skip)",
+		"product", p.pName, "version", p.pFlags.version, "reason", reason)
+	return &summary{Total: sent, TotalSize: p.totalSize, Status: "SKIPPED", Version: p.pFlags.version, Product: p.pName}
 }
 
 func (p *publishCmd) publish(ctx context.Context) error {
 	// echo "POST publish $product/$version (latest=$latest)"
-	p.log.Debug("POST publish", "product", p.pName, "version", p.pFlags.version, "latest", p.pFlags.latest)
+	p.log.DebugContext(ctx, "POST publish", "product", p.pName, "version", p.pFlags.version, "latest", p.pFlags.latest)
 	if p.pFlags.dryRun {
 		return nil
 	}
@@ -550,23 +692,51 @@ func (p *publishCmd) publish(ctx context.Context) error {
 }
 
 func (p *publishCmd) processPublish(cmd *cobra.Command) (*summary, error) {
-	root := pflags.safeRoot()
+	ctx := cmd.Context()
+	root := p.pFlags.safeRoot()
 	var files []string
 	var err error
-	var grVersion string
 	if p.isGoReleaserBuilds() {
-		files, grVersion, err = p.readFilesFromGoReleaser(root)
-		if p.pFlags.version != "" && p.pFlags.version != grVersion {
-			return nil, errors.New("--version value and metadata#Version or metadata#Tag are different")
+		var versions []string
+		files, versions, err = p.readFilesFromGoReleaser(root)
+		if err != nil {
+			return nil, err
 		}
-		if p.pFlags.version == "" {
-			p.pFlags.version = grVersion
+		// --version must be the tag or the version of metadata.json; without it, the tag is
+		// taken first, as upload.sh does.
+		switch {
+		case len(versions) == 0:
+		case p.pFlags.version == "":
+			p.pFlags.version = versions[0]
+		case !slices.Contains(versions, p.pFlags.version):
+			return nil, fmt.Errorf("--version %s is not the tag nor the version of metadata.json (%s)",
+				p.pFlags.version, strings.Join(versions, ", "))
 		}
 	} else {
 		files, err = p.readFilesFromRootDir(root)
 	}
 	if err != nil {
 		return nil, err
+	}
+	if p.pFlags.version == "" {
+		return nil, errors.New("the version is required: pass --version, or publish a goreleaser build with a metadata.json")
+	}
+	if err := pathSegmentArg("version", p.pFlags.version); err != nil {
+		return nil, err
+	}
+
+	// Check before anything is sent, so a published version costs no upload. Even in dry run:
+	// the check only reads.
+	published, err := p.isPublished(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if published {
+		if p.pFlags.ifExists == skip {
+			return p.skipped(ctx, 0, errAlreadyPublished), nil
+		}
+		return nil, fmt.Errorf("%s %s: %w: pass --if-exists skip to succeed without sending anything",
+			p.pName, p.pFlags.version, errAlreadyPublished)
 	}
 
 	// The product card may live outside the root (the current directory by default): its path
@@ -576,22 +746,30 @@ func (p *publishCmd) processPublish(cmd *cobra.Command) (*summary, error) {
 		return nil, err
 	}
 
-	size := len(files) + 1 // +1 for registry.yaml
+	uploads, err := p.uploads(files, productFile)
+	if err != nil {
+		return nil, err
+	}
+	if !p.pFlags.dryRun && sendsTokenInClear(p.cfg.Server.BaseUrl) {
+		p.log.WarnContext(ctx, "the upload token is sent in clear: server.url is not https", "url", p.cfg.Server.BaseUrl)
+	}
 
-	for i, file := range files {
-		err = p.put(cmd.Context(), i+1, size, filepath.Base(file), file)
-		if err != nil {
+	// Another job may publish the version while this one sends it: with --if-exists skip, the
+	// "already published" (409) of the server is a skip too.
+	size := len(uploads)
+	for i, u := range uploads {
+		if err = p.put(ctx, i+1, size, u.name, u.path); err != nil {
+			if p.pFlags.ifExists == skip && errors.Is(err, errAlreadyPublished) {
+				return p.skipped(ctx, i, err), nil
+			}
 			return nil, err
 		}
 	}
 
-	err = p.put(cmd.Context(), size, size, "registry.yaml", productFile)
-	if err != nil {
-		return nil, err
-	}
-
-	err = p.publish(cmd.Context())
-	if err != nil {
+	if err = p.publish(ctx); err != nil {
+		if p.pFlags.ifExists == skip && errors.Is(err, errAlreadyPublished) {
+			return p.skipped(ctx, size, err), nil
+		}
 		return nil, err
 	}
 
@@ -610,50 +788,76 @@ func (p *publishCmd) processPublish(cmd *cobra.Command) (*summary, error) {
 	return &sum, nil
 }
 
+// upload is a file to send: path on this machine, name on the server.
+type upload struct {
+	name, path string
+}
+
+// uploads lists the files to send, in order: files, then the product card as registry.yaml, and
+// the --changelog-file as CHANGELOG.md, the names the server reads them by (as upload.sh). A
+// file of files with one of these names is skipped: the one given explicitly wins.
+func (p *publishCmd) uploads(files []string, productFile string) ([]upload, error) {
+	explicit := []upload{{productCardName, productFile}}
+	if p.pFlags.changelog != "" {
+		changelog, err := config.ExpandPath(p.pFlags.changelog)
+		if err != nil {
+			return nil, fmt.Errorf("--changelog-file: %w", err)
+		}
+		explicit = append(explicit, upload{changelogName, changelog})
+	}
+
+	list := make([]upload, 0, len(files)+len(explicit))
+	for _, file := range files {
+		name := filepath.Base(file)
+		if slices.ContainsFunc(explicit, func(u upload) bool { return u.name == name }) {
+			p.log.Warn("file skipped: its name is the one of a file given by an option", "file", file, "name", name)
+			continue
+		}
+		list = append(list, upload{name, file})
+	}
+	return append(list, explicit...), nil
+}
+
 func (p *publishCmd) readFilesFromRootDir(rootDir string) ([]string, error) {
 	entries, err := os.ReadDir(rootDir)
 	if err != nil {
 		return nil, err
 	}
-	tmp, err := util.CreateSoftTempdir()
-	if err != nil {
-		return nil, err
-	}
-	addTmpPath(tmp)
 
 	var files []string
 	var walkErrors []error
 
 	for _, entry := range entries {
+		// A hidden file (.env, .git, .DS_Store) may hold a secret: never sent.
+		if strings.HasPrefix(entry.Name(), ".") {
+			p.log.Info("hidden file skipped", "file", entry.Name())
+			continue
+		}
+
 		if entry.IsDir() {
 			// normalizePath only resolves regular files: a directory keeps its raw path.
 			path := filepath.Join(rootDir, entry.Name())
-			if pflags.skipSubdirectories {
-				p.log.Warn("skipping sub directory", "dirname", entry.Name())
+			if p.pFlags.skipSubdirectories {
+				p.log.Warn("sub directory skipped", "dir", entry.Name())
 				continue
-			} else if pflags.compressSubdirectories {
-				ext := "." + strings.ToLower(pflags.compressSubdirType)
-				compressedName := filepath.Join(tmp, entry.Name()+ext)
-				compress := util.TarGzDir
-				if ext == ".zip" {
-					compress = util.ZipDir
-				}
-				if err := compress(path, compressedName); err != nil {
+			} else if p.pFlags.compressSubdirectories {
+				archive, err := p.compressDir(path, entry.Name())
+				if err != nil {
 					walkErrors = append(walkErrors, fmt.Errorf("compress %s: %w", path, err))
 					continue
 				}
-				files = append(files, compressedName)
+				files = append(files, archive)
 				continue
 			} else {
 				walkErrors = append(walkErrors,
-					fmt.Errorf("is a directory: archive it first, e.g. tar czf %s.tar.gz -C %s %s",
-						entry.Name(), path, entry.Name()))
+					fmt.Errorf("%s is a directory: archive it first (tar czf %s.tar.gz -C %s %s), or pass --compress-subdirs or --skip-subdirs",
+						path, entry.Name(), rootDir, entry.Name()))
 				continue
 			}
 		}
 
 		if slices.Contains(reservedFilenames, strings.ToLower(entry.Name())) {
-			return nil, fmt.Errorf("%s is a reserved file. (Reserved: %s)", entry.Name(),
+			return nil, fmt.Errorf("%s is a reserved name: the server writes it on publish (reserved: %s)", entry.Name(),
 				strings.Join(reservedFilenames, ", "))
 		}
 
@@ -662,13 +866,13 @@ func (p *publishCmd) readFilesFromRootDir(rootDir string) ([]string, error) {
 			return nil, err
 		}
 		if !info.Mode().IsRegular() {
-			p.log.Warn("irregular file", "file", entry.Name())
+			p.log.Warn("not a regular file, skipped", "file", entry.Name())
 			continue
 		}
 
-		path := p.normalizePath(rootDir, filepath.Join(rootDir, entry.Name()))
-		if path == "" {
-			p.log.Warn("unresolved file", "file", entry.Name())
+		path, err := p.normalizePath(rootDir, filepath.Join(rootDir, entry.Name()))
+		if err != nil {
+			p.log.Warn("file skipped", "file", entry.Name(), "error", err)
 			continue
 		}
 		files = append(files, path)
@@ -676,54 +880,97 @@ func (p *publishCmd) readFilesFromRootDir(rootDir string) ([]string, error) {
 	return files, errors.Join(walkErrors...)
 }
 
-func (p *publishCmd) readFilesFromGoReleaser(root string) (files []string, version string, err error) {
+// compressDir archives the directory at path as name.tar.gz or name.zip (--compress-type), in a
+// temporary directory created at the first archive and removed by tmpCleanup.
+func (p *publishCmd) compressDir(path, name string) (string, error) {
+	if p.tmpDir == "" {
+		tmp, err := util.CreateSoftTempdir()
+		if err != nil {
+			return "", err
+		}
+		p.addTmpPath(tmp)
+		p.tmpDir = tmp
+	}
+	ext := "." + strings.ToLower(p.pFlags.compressSubdirType)
+	archive := filepath.Join(p.tmpDir, name+ext)
+	compress := util.TarGzDir
+	if ext == ".zip" {
+		compress = util.ZipDir
+	}
+	if err := compress(path, archive); err != nil {
+		return "", err
+	}
+	return archive, nil
+}
 
-	b, _ := os.ReadFile(p.normalizePath(p.pFlags.goReleaserDir, p.pFlags.goReleaserArtifactsFile))
+// readFilesFromGoReleaser lists the files of a goreleaser build: the files of artifacts.json
+// whose type is sent, then artifacts.json and metadata.json. The paths of artifacts.json are
+// relative to --goreleaser-dir, else to root. versions holds the tag, then the version, of
+// metadata.json, when it has them.
+func (p *publishCmd) readFilesFromGoReleaser(root string) (files, versions []string, err error) {
+	base := p.pFlags.goReleaserDir
+	if base == "" {
+		base = root
+	}
 
+	artifactsFile, err := config.ExpandPath(p.pFlags.goReleaserArtifactsFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	b, err := os.ReadFile(artifactsFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the goreleaser artifacts: %w", err)
+	}
 	var artifacts []artifact
 	if err = json.Unmarshal(b, &artifacts); err != nil {
-		return nil, "", errors.New("unable to parse artifacts.json")
+		return nil, nil, fmt.Errorf("%s is not a valid artifacts.json: %w", artifactsFile, err)
 	}
 
 	for _, a := range artifacts {
-		if slices.Contains(artifactSupportedFileTypes, a.Type) {
-			files = append(files, p.normalizePath(p.pFlags.goReleaserDir, a.Path))
+		if !slices.Contains(artifactSupportedFileTypes, a.Type) {
+			continue
 		}
+		path, err := p.normalizePath(base, a.Path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", artifactsFile, err)
+		}
+		files = append(files, path)
 	}
+	files = append(files, artifactsFile)
 
-	if ok, _ := fileExists(p.pFlags.goReleaserMetadataFile); ok {
-		type meta struct {
+	if p.pFlags.goReleaserMetadataFile != "" && fileExists("", p.pFlags.goReleaserMetadataFile) == nil {
+		metadataFile, err := config.ExpandPath(p.pFlags.goReleaserMetadataFile)
+		if err != nil {
+			return nil, nil, err
+		}
+		m, err := os.ReadFile(metadataFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read the goreleaser metadata: %w", err)
+		}
+		var metadata struct {
 			Tag     string `json:"tag"`
 			Version string `json:"version"`
 		}
-		var metadata meta
-		m, _ := os.ReadFile(p.pFlags.goReleaserMetadataFile)
 		if err = json.Unmarshal(m, &metadata); err != nil {
-			return nil, "", err
+			return nil, nil, fmt.Errorf("%s is not a valid metadata.json: %w", metadataFile, err)
 		}
-		if metadata.Version != "" {
-			version = metadata.Version
-		} else if metadata.Tag != "" {
-			version = metadata.Tag
+		for _, v := range []string{metadata.Tag, metadata.Version} {
+			if v != "" {
+				versions = append(versions, v)
+			}
 		}
+		files = append(files, metadataFile)
 	}
 
-	files = append(files, p.normalizePath(p.pFlags.goReleaserDir, p.pFlags.goReleaserArtifactsFile))
-	if p.pFlags.goReleaserMetadataFile != "" {
-		files = append(files, p.normalizePath(p.pFlags.goReleaserDir, p.pFlags.goReleaserMetadataFile))
-	}
-
-	return files, version, nil
+	return files, versions, nil
 }
 
-func (p *publishCmd) normalizePath(rootDir, assetRelativePath string) string {
-	resolved, err := util.ResolveEntry(rootDir, assetRelativePath)
+// normalizePath resolves path under rootDir: a regular file, neither a symbolic link nor out of
+// rootDir (see util.ResolveEntry).
+func (p *publishCmd) normalizePath(rootDir, path string) (string, error) {
+	resolved, err := util.ResolveEntry(rootDir, path)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	if !resolved.Info.Mode().IsRegular() {
-		return ""
-	}
-
-	return resolved.Path
+	return resolved.Path, nil
 }

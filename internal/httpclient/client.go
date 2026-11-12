@@ -52,6 +52,9 @@ type RequestOptions struct {
 	// DownloadProgress reports the bytes of the response body read so far by the caller: read
 	// it as a stream (io.Copy), not with io.ReadAll. The cache is skipped.
 	DownloadProgress ProgressFunc
+	// NoRetry sends the request once, whatever WithRetry says: for a request that is not
+	// idempotent, which the caller retries itself.
+	NoRetry bool
 }
 
 type Option func(*Client)
@@ -292,7 +295,7 @@ func (c *Client) Do(ctx context.Context, method, path string, opts *RequestOptio
 	}
 
 	// Execute with retry
-	response, ferr := c.doWithRetry(hc, req)
+	response, ferr := c.doWithRetry(hc, req, opts != nil && opts.NoRetry)
 
 	if ferr == nil && opts != nil && opts.DownloadProgress != nil {
 		response.Body = util.NewProgressReader(response.Body, response.ContentLength, opts.DownloadProgress)
@@ -468,12 +471,12 @@ func (c *Client) buildURL(path string, opts *RequestOptions) (*url.URL, error) {
 	return u, nil
 }
 
-func (c *Client) doWithRetry(hc *http.Client, req *http.Request) (*http.Response, error) {
+func (c *Client) doWithRetry(hc *http.Client, req *http.Request, noRetry bool) (*http.Response, error) {
 	// A body is sent again through GetBody: set by http.NewRequest for an in-memory body, and by
 	// setStreamBody for a seekable stream. Without it, the request is sent only once.
 	hasBody := req.Body != nil && req.Body != http.NoBody
 	maxRetries := c.retry.MaxRetries
-	if hasBody && req.GetBody == nil {
+	if noRetry || (hasBody && req.GetBody == nil) {
 		maxRetries = 0
 	}
 	var lastErr error

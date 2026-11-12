@@ -9,6 +9,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 )
 
 func GzipFile(src, dst string) (err error) {
@@ -121,7 +124,34 @@ func ZipFile(src, dst string) (err error) {
 	return nil
 }
 
-// TarGzDir streams srcDir into a gzip-compressed tar at dst.
+// hidden tells whether the walk of srcDir skips path: a name starting with "." (.env, .git,
+// .DS_Store) is never archived, as it may hold a secret.
+func hidden(srcDir, path string, d fs.DirEntry) bool {
+	return path != srcDir && strings.HasPrefix(d.Name(), ".")
+}
+
+// skipHidden returns the answer of a WalkDir function for a hidden path: skip it, and all of
+// it for a directory.
+func skipHidden(d fs.DirEntry) error {
+	if d.IsDir() {
+		return filepath.SkipDir
+	}
+	return nil
+}
+
+// sourceDateEpoch returns the time of SOURCE_DATE_EPOCH (https://reproducible-builds.org), the
+// date of every archived file when it is set.
+func sourceDateEpoch() (time.Time, bool) {
+	sec, err := strconv.ParseInt(os.Getenv("SOURCE_DATE_EPOCH"), 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(sec, 0).UTC(), true
+}
+
+// TarGzDir streams srcDir into a gzip-compressed tar at dst. Hidden files are skipped (see
+// hidden), and the owner is not kept, so the archive of the same files is the same on every
+// machine: with SOURCE_DATE_EPOCH, the dates too.
 func TarGzDir(srcDir, dst string) (err error) {
 	tmpDir := filepath.Dir(dst)
 	if err := os.MkdirAll(tmpDir, 0700); err != nil {
@@ -167,6 +197,9 @@ func TarGzDir(srcDir, dst string) (err error) {
 		if path == tmpName || path == dst {
 			return nil
 		}
+		if hidden(srcDir, path, d) {
+			return skipHidden(d)
+		}
 
 		info, err := d.Info() // lstat semantics — symlinks are NOT followed
 		if err != nil {
@@ -192,6 +225,10 @@ func TarGzDir(srcDir, dst string) (err error) {
 		hdr.Name = rel
 		if d.IsDir() {
 			hdr.Name += "/"
+		}
+		hdr.Uid, hdr.Gid, hdr.Uname, hdr.Gname = 0, 0, "", ""
+		if epoch, ok := sourceDateEpoch(); ok {
+			hdr.ModTime, hdr.AccessTime, hdr.ChangeTime = epoch, time.Time{}, time.Time{}
 		}
 
 		if err := tw.WriteHeader(hdr); err != nil {
@@ -228,7 +265,7 @@ func TarGzDir(srcDir, dst string) (err error) {
 	return nil
 }
 
-// ZipDir writes srcDir into a zip archive at dst, with the same layout as TarGzDir.
+// ZipDir writes srcDir into a zip archive at dst, with the same layout and rules as TarGzDir.
 func ZipDir(srcDir, dst string) (err error) {
 	tmpDir := filepath.Dir(dst)
 	if err := os.MkdirAll(tmpDir, 0700); err != nil {
@@ -257,6 +294,9 @@ func ZipDir(srcDir, dst string) (err error) {
 		if path == tmpName || path == dst {
 			return nil
 		}
+		if hidden(srcDir, path, d) {
+			return skipHidden(d)
+		}
 
 		info, err := d.Info() // lstat semantics — symlinks are NOT followed
 		if err != nil {
@@ -280,6 +320,9 @@ func ZipDir(srcDir, dst string) (err error) {
 		}
 		// zip paths always use forward slashes
 		hdr.Name = filepath.ToSlash(rel)
+		if epoch, ok := sourceDateEpoch(); ok {
+			hdr.Modified = epoch
+		}
 		if d.IsDir() {
 			hdr.Name += "/"
 			_, err = zw.CreateHeader(hdr)

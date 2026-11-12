@@ -32,13 +32,20 @@ type Resolved struct {
 }
 
 // ResolveEntry resolves one manifest entry against assetDir (relative or absolute),
-// tolerating both "base prefix" and "subdirectory" interpretations.
+// tolerating both "base prefix" and "subdirectory" interpretations. A symbolic link is refused,
+// and so is a path that leads out of assetDir once its links are resolved: a manifest cannot make
+// a file outside of it public.
 func ResolveEntry(assetDir, raw string) (Resolved, error) {
 	absRoot, err := filepath.Abs(assetDir)
 	if err != nil {
 		return Resolved{}, err
 	}
 	absRoot = filepath.Clean(absRoot)
+	// assetDir itself may be a link (/var is /private/var on macOS): compare resolved paths.
+	realRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return Resolved{}, err
+	}
 
 	// Build candidate paths.
 	var cands []string
@@ -61,14 +68,21 @@ func ResolveEntry(assetDir, raw string) (Resolved, error) {
 	// Keep only valid matches.
 	var ok []Resolved
 	for _, c := range cands {
-		_, err = filepath.EvalSymlinks(c)
-		if err != nil || !within(absRoot, c) {
+		if !within(absRoot, c) {
+			continue
+		}
+		if linfo, err := os.Lstat(c); err != nil || linfo.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		// A linked directory on the way may still lead out of the root.
+		real, err := filepath.EvalSymlinks(c)
+		if err != nil || !within(realRoot, real) {
 			continue
 		}
 		if _, reserved := reservedFilenames[filepath.Base(c)]; reserved {
 			continue
 		}
-		info, err := os.Stat(c) // follows symlinks — matches [ -f ]
+		info, err := os.Stat(c)
 		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
@@ -87,7 +101,7 @@ func ResolveEntry(assetDir, raw string) (Resolved, error) {
 
 	switch len(uniq) {
 	case 0:
-		return Resolved{}, fmt.Errorf("%q: no valid file under %s (tried %v)", raw, absRoot, cands)
+		return Resolved{}, fmt.Errorf("%q: no regular file under %s, symbolic links refused (tried %v)", raw, absRoot, cands)
 	case 1:
 		return uniq[0], nil
 	default:

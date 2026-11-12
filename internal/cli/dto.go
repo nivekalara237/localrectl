@@ -1,7 +1,5 @@
 package cli
 
-import "encoding/json"
-
 type artifact struct {
 	Name   string `json:"name"`
 	Path   string `json:"path"`
@@ -12,6 +10,4 @@ type artifact struct {
 		Format   any `json:"Format"`
 		Checksum any `json:"Checksum"`
 	} `json:"extra"`
-
-	fields map[string]json.RawMessage
 }

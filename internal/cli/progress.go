@@ -12,12 +12,13 @@ const (
 	progressWidth    = 30
 	progressInterval = 100 * time.Millisecond
 
-	ansiReset = "\x1b[0m"
-	ansiBold  = "\x1b[1m"
-	ansiRed   = "\x1b[31m"
-	ansiGreen = "\x1b[32m"
-	ansiCyan  = "\x1b[36m"
-	clearLine = "\x1b[K"
+	ansiReset  = "\x1b[0m"
+	ansiBold   = "\x1b[1m"
+	ansiRed    = "\x1b[31m"
+	ansiGreen  = "\x1b[32m"
+	ansiYellow = "\x1b[33m"
+	ansiCyan   = "\x1b[36m"
+	clearLine  = "\x1b[K"
 )
 
 // progressBar draws the transfer of one file on one line:
@@ -78,6 +79,12 @@ func (b *progressBar) Update(done, total int64) {
 // Done draws the final line in green, with ✓.
 func (b *progressBar) Done() {
 	b.finish(ansiGreen, "✓")
+}
+
+// Skip draws the final line in yellow, with –: the server already has the version, and the
+// command still succeeds (--if-exists skip).
+func (b *progressBar) Skip() {
+	b.finish(ansiYellow, "–")
 }
 
 // Fail draws the final line in red, with ✗.
