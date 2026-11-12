@@ -45,6 +45,7 @@ func NewRootCommand() *cobra.Command {
 		newVersionsCommand(),
 		newProductReleaseCommand(),
 		newProductsCommand(),
+		newProductPublishCommand(),
 	)
 
 	config.AddFlags(root.PersistentFlags())
