@@ -85,7 +85,7 @@ docker_signs:
     args: ["sign", "--yes", "${artifact}@${digest}"]
 
 changelog:
-  use: github
+  use: git
   sort: asc
   filters:
     exclude:

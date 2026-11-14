@@ -260,7 +260,7 @@ func (f *publishFlags) validateProductCard(ctx context.Context, vCmd *validateCm
 		for _, p := range problems {
 			_, _ = fmt.Fprintf(&b, "\n  %s: %s", p.Key, p.Message)
 		}
-		return errors.New(b.String())
+		return config.Usage(errors.New(b.String()))
 	}
 	return nil
 }
@@ -276,7 +276,7 @@ func (f *publishFlags) validateGoReleaseFile(ctx context.Context, vCmd *validate
 		for _, p := range problems {
 			_, _ = fmt.Fprintf(&b, "\n  %s: %s", p.Key, p.Message)
 		}
-		return errors.New(b.String())
+		return config.Usage(errors.New(b.String()))
 	}
 	return nil
 }
@@ -312,11 +312,11 @@ func fileExists(what, path string) error {
 
 func (f *publishFlags) validateFlags(pName string, logger *slog.Logger, ctx context.Context, vCmd *validateCmd) error {
 	if f.ifExists != "" && f.ifExists != fail && f.ifExists != skip {
-		return fmt.Errorf("--if-exists must be fail or skip, not %q", f.ifExists)
+		return config.Usage(fmt.Errorf("--if-exists must be fail or skip, not %q", f.ifExists))
 	}
 
 	if f.parallel < 1 {
-		return fmt.Errorf("--parallel must be 1 or more, not %d", f.parallel)
+		return config.Usage(fmt.Errorf("--parallel must be 1 or more, not %d", f.parallel))
 	}
 
 	if f.noValidate {
@@ -325,12 +325,12 @@ func (f *publishFlags) validateFlags(pName string, logger *slog.Logger, ctx cont
 
 	if f.changelog != "" {
 		if err := fileExists("changelog", f.changelog); err != nil {
-			return err
+			return config.Usage(err)
 		}
 	}
 
 	if f.productFile == "" {
-		return errors.New("the product card is required: pass --product-file")
+		return config.Usage(errors.New("the product card is required: pass --product-file"))
 	}
 
 	if f.productFile != "" {
@@ -346,17 +346,17 @@ func (f *publishFlags) validateFlags(pName string, logger *slog.Logger, ctx cont
 	if f.root != "" {
 		exist, err := dirExists(f.root)
 		if err != nil {
-			return err
+			return config.Usage(err)
 		}
 		if !exist {
-			return fmt.Errorf("--root %s is not a directory", f.root)
+			return config.Usage(fmt.Errorf("--root %s is not a directory", f.root))
 		}
 	}
 
 	if f.compressSubdirType != "" {
 		available := []string{"zip", "tar.gz"}
 		if !slices.Contains(available, strings.ToLower(f.compressSubdirType)) {
-			return fmt.Errorf("--compress-type must be %s, not %q", strings.Join(available, " or "), f.compressSubdirType)
+			return config.Usage(fmt.Errorf("--compress-type must be %s, not %q", strings.Join(available, " or "), f.compressSubdirType))
 		}
 	}
 
@@ -366,13 +366,13 @@ func (f *publishFlags) validateFlags(pName string, logger *slog.Logger, ctx cont
 		// 	[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || die "--version $version is not X.Y.Z or X.Y.Z-pre"
 		regx := regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
 		if !regx.Match([]byte(f.version)) {
-			return fmt.Errorf("--version %s is not X.Y.Z or X.Y.Z-pre, such as 1.2.0-rc.1: pass --no-semver-standard to accept it", f.version)
+			return config.Usage(fmt.Errorf("--version %s is not X.Y.Z or X.Y.Z-pre, such as 1.2.0-rc.1: pass --no-semver-standard to accept it", f.version))
 		}
 	}
 
 	if f.goReleaserDir == "" && f.goReleaserArtifactsFile != "" {
 		if err := fileExists("goreleaser artifacts", f.goReleaserArtifactsFile); err != nil {
-			return err
+			return config.Usage(err)
 		}
 		errp := f.validateGoReleaseFile(ctx, vCmd, f.goReleaserArtifactsFile)
 		if errp != nil {
