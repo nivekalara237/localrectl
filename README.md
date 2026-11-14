@@ -31,7 +31,8 @@ local-registry is a private server where your teams store the versions of their 
   - [products search](#products-search-find-a-product)
   - [versions](#versions-list-the-versions-of-a-product)
   - [release](#release-read-a-version)
-  - [publish](#publish-send-a-new-version-coming-soon)
+  - [publish](#publish-send-a-new-version)
+  - [download](#download-get-the-files-of-a-version)
   - [Other commands](#other-commands)
 - [Exit codes](#exit-codes)
 - [Security](#security)
@@ -42,7 +43,7 @@ local-registry is a private server where your teams store the versions of their 
 
 `localrectl` covers the two sides of local-registry:
 
-- **Reading**: find a product, see its versions, read what a version holds. No token needed.
+- **Reading**: find a product, see its versions, read what a version holds, download its files and check them. No token needed.
 - **Publishing**: check a product card, then send a new version to the server. Sending needs an upload token.
 
 
@@ -128,10 +129,17 @@ localrectl versions billing-agent
 localrectl release billing-agent latest
 ```
 
-**4. Before you publish, check your product card.**
+**4. Download the files of a version.**
+
+```sh
+localrectl download billing-agent
+```
+
+**5. Check your product card, then publish a new version.**
 
 ```sh
 localrectl validate registry.yaml
+localrectl publish billing-agent --root ./out --version 1.2.0 --product-file registry.yaml
 ```
 
 ## Configuration
@@ -262,51 +270,122 @@ localrectl release billing-agent v1.2.0
 localrectl release billing-agent latest
 ```
 
-### `publish`: send a new version (coming soon)
+### `publish`: send a new version
 
-> **Not available yet.** Until then, use `scripts/upload.sh` from the [local-registry repository](https://github.com/nivekalara237/local-registry).
-
-`publish` sends the files of a new version to the server, then makes the version public. It needs the upload token.
+Sends the files of a new version to the server, each one with its sha256, then publishes the version. It needs the upload token. A published version never changes.
 
 ```sh
-localrectl publish <product> [artifacts.json | FOLDER]
+localrectl publish <product> --version <version> --product-file <registry.yaml> [flags]
 ```
 
-You can publish in two ways:
+The files come from one of two places:
 
-- **From goreleaser**: `localrectl` reads the `artifacts.json` file that goreleaser writes, and sends the files listed in it. Without a path, it uses `dist/artifacts.json`.
-- **From a folder**: `localrectl` sends every file of the folder. The folder cannot hold subfolders: put them in an archive first, with `tar czf`.
+- **A goreleaser build**: the files listed in its `artifacts.json`, with `artifacts.json` and `metadata.json`. It is used with `--goreleaser-dir` or `--goreleaser-artifacts-file`, or when the root folder holds an `artifacts.json`.
+- **A folder**, `--root` (the current folder by default): every file in it. A subfolder fails, unless `--skip-subdirs` skips it or `--compress-subdirs` sends it as one archive.
+
+The product card, `--product-file`, is checked against the rules of the server, then sent as `registry.yaml`.
 
 ```sh
-# After goreleaser: publish and make it the latest version
-localrectl publish billing-agent --latest
+# The files of a folder
+localrectl publish billing-agent --root ./out --version 1.2.0 --product-file registry.yaml
 
-# A folder of files, with its version number
-localrectl publish billing-agent ./out --version v1.2.0
+# A goreleaser build, made the latest version
+localrectl publish billing-agent --goreleaser-dir dist --version 1.2.0 --product-file registry.yaml --latest
 
-# See what would be sent, without sending anything
-localrectl publish billing-agent --dry-run
+# Each subfolder of ./out sent as a zip archive
+localrectl publish billing-agent --root ./out --version 1.2.0 --product-file registry.yaml \
+  --compress-subdirs --compress-type zip
+
+# What would be sent, without sending anything
+localrectl publish billing-agent --root ./out --version 1.2.0 --product-file registry.yaml --dry-run
 ```
 
-What happens, step by step:
-
-1. `localrectl` checks the product card and `artifacts.json` on your machine.
-2. It sends each file, with its sha256 so the server can check it.
-3. It sends the product card (`registry.yaml`) and `CHANGELOG.md`, then `artifacts.json`.
-4. It asks the server to publish. The version appears whole, or not at all.
+![localrectl publish](assets/publish.png)
 
 Options:
 
+- `--version V`: the version, `X.Y.Z` or `X.Y.Z-pre`; for a goreleaser build, by default the tag (else the version) of `metadata.json`
+- `--no-semver-standard`: accept a version that is not `X.Y.Z`, such as `v1.2.0`
+- `--product-file F`: the product card (required)
+- `--changelog-file F`: the changelog, sent as `CHANGELOG.md`
+- `-R, --root DIR`: the folder of the files to send
+- `--goreleaser-dir DIR`: the goreleaser build folder (`dist`), with its `artifacts.json` and `metadata.json`
+- `--goreleaser-artifacts-file F`, `--goreleaser-metadata-file F`: the `artifacts.json` and `metadata.json` of a goreleaser build, given one by one
+- `--skip-subdirs`: skip the subfolders of the root folder
+- `--compress-subdirs`: send each subfolder as one archive; `--compress-type tar.gz|zip` (`tar.gz` by default)
 - `--latest`: also make this version the latest one
+- `--if-exists fail|skip`: if the version is already published, fail (the default), or succeed without sending anything
+- `--no-validate`: skip the checks of the product card and of `artifacts.json`
 - `--dry-run`: show what would be sent, and send nothing (no token needed)
-- `--version V`: the version number; by default, the one found in goreleaser's `metadata.json`
-- `--product-file F`: the product card to send; by default, the `registry.yaml` of the folder
-- `--root DIR`: the folder that the paths of `artifacts.json` start from
-- `--changelog F`: the `CHANGELOG.md` to send; by default, the one next to `artifacts.json`
-- `--exclude GLOB`: files of the folder not to send, such as `*.log` (repeat it to give several)
-- `--parallel N`: how many files are sent at the same time (4 by default)
-- `--no-validate`: skip the check of step 1
-- `--if-exists fail|skip`: if the version already exists, fail (the default), or stop without an error, so a CI job can run again
+
+### `download`: get the files of a version
+
+Downloads files of a version and checks each one against the sha256 of its `release.json`. Without a version, it takes `latest`.
+
+```sh
+localrectl download <product> [version] [flags]
+```
+
+The files are chosen from the `release.json`:
+
+- `--file NAME`: these files, by name (repeatable)
+- `--all`: every file of the version, the checksums file included
+- `--os`, `--arch`, `--kind`: every file that matches; a file with no os or arch fits any
+- none of them: the archive of this machine (its os and arch), a zip on Windows and a tar.gz elsewhere
+
+Each file is written to a temporary file, checked, then renamed: a corrupted file never reaches the destination folder. A file already there with the same sha256 is not downloaded again; a different one fails, unless `--force` replaces it.
+
+```sh
+# The archive of this machine, for the latest version, in the current folder
+localrectl download billing-agent
+
+# The linux arm64 files of a version, in /opt/billing-agent
+localrectl download billing-agent v1.2.0 --os linux --arch arm64 -d /opt/billing-agent
+
+# Precise files
+localrectl download billing-agent v1.2.0 --file billing-agent_1.2.0_linux_amd64.tar.gz
+
+# The archive of this machine, extracted in /opt/billing-agent
+localrectl download billing-agent --extract -d /opt/billing-agent
+
+# Every file of the version
+localrectl download billing-agent v1.2.0 --all -d ./billing-agent
+
+# What would be downloaded, without downloading anything
+localrectl download billing-agent --all --dry-run
+```
+
+![localrectl download](assets/download.png)
+
+Options:
+
+- `--file NAME`, `--all`, `--os OS`, `--arch ARCH`, `--kind KIND`: the files to download (see above); `--os` takes `linux`, `darwin` (or `macos`) or `windows`, `--kind` takes `archive`, `binary`, `package`, `file` or `source`
+- `-d, --dir DIR`: the destination folder, created if missing (the current folder by default)
+- `--force`: replace a file, or an extracted entry, that differs from the downloaded one
+- `--extract`: extract the downloaded archives (tar.gz or zip) into `--dir`; the archives are kept. Only folders and regular files are extracted: a link, or an entry that would land outside `--dir`, fails
+- `--no-verify`: skip the sha256 check (not recommended)
+- `--dry-run`: show what would be downloaded, and download nothing
+
+#### Check the signature
+
+`--verify-signature` checks the [Sigstore](https://www.sigstore.dev/) signature of the checksums file of the version with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/), which must be installed. Then each file must be listed in that signed file with the sha256 of the `release.json`. Nothing is downloaded when a check fails.
+
+The expected signer is given in one of two ways:
+
+- `--key FILE`: the public key of the signer
+- `--certificate-identity ID` (or `--certificate-identity-regexp REGEXP`) with `--certificate-oidc-issuer URL`: the identity of the signer in its certificate (cosign keyless)
+
+```sh
+# Signed with a key
+localrectl download billing-agent --verify-signature --key cosign.pub
+
+# Signed by the release workflow of a GitHub repository, with cosign keyless
+localrectl download billing-agent --verify-signature \
+  --certificate-identity-regexp '^https://github.com/acme/billing-agent/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The signature must be recorded in the Sigstore transparency log (Rekor).
 
 ### Other commands
 
@@ -318,17 +397,11 @@ Options:
 
 When a command ends, it returns a number to the shell. A CI pipeline uses it to know whether the step failed.
 
-| Code   | Meaning                                                                 |
-|--------|-------------------------------------------------------------------------|
-| 0      | Success                                                                 |
-| 1      | Network or server error                                                 |
-| 2      | Bad use of the command: unknown option, missing argument, wrong setting |
-| 3      | Validation refused (by the server, or by the local check)               |
-| 4      | The version already exists                                              |
-| 5      | A sha256 or a signature does not match                                  |
-| 6      | Not found                                                               |
-
-Codes 3 to 6 come with `publish` and `download`. Today, a failed command returns `1`, or the number you give to `--exit-code`:
+| Code | Meaning                                                                 |
+|------|-------------------------------------------------------------------------|
+| 0    | Success                                                                 |
+| 1    | Failure, or the number given to `--exit-code`                           |
+| 2    | Bad use of the command: unknown option, missing argument, wrong setting |
 
 ```sh
 localrectl validate registry.yaml --exit-code 3
