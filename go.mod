@@ -2,7 +2,7 @@ module github.com/nivekalara237/localrectl
 
 go 1.27.2
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	github.com/spf13/cast v1.10.0
