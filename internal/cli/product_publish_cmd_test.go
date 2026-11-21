@@ -372,3 +372,62 @@ func TestPublishCommandHelp(t *testing.T) {
 		}
 	}
 }
+
+func TestPublishCommandExclude(t *testing.T) {
+	isolate(t)
+	srv := newFullServer(t, http.StatusNotFound)
+	root, productCard := publishDir(t)
+	write(t, filepath.Join(root, "build.log"), "log")
+	write(t, filepath.Join(root, "debug.log"), "log")
+	write(t, filepath.Join(root, "node_modules", "x.js"), "x")
+	write(t, filepath.Join(root, "release.json"), "{}")
+
+	r := publish(t, srv.URL, "--root", root, "--product-file", productCard, "--version", "1.2.0",
+		"--exclude", "node_modules", "--exclude", "release.json", "--exclude", "bb.txt", "--exclude-match", "*.log", "-v")
+	if r.err != nil {
+		t.Fatalf("%v\nstderr: %s", r.err, r.stderr)
+	}
+	want := []string{
+		"PUT /billing/artifacts/1.2.0/files/a.txt", "PUT /billing/artifacts/1.2.0/files/registry.yaml",
+		"POST /billing/artifacts/1.2.0/publish",
+	}
+	if !slices.Equal(srv.sent(), want) {
+		t.Errorf("sent %v", srv.sent())
+	}
+	if !strings.Contains(r.stderr, "file excluded") || !strings.Contains(r.stderr, "node_modules") {
+		t.Errorf("stderr = %s", r.stderr)
+	}
+}
+
+func TestPublishCommandExcludeErrors(t *testing.T) {
+	isolate(t)
+	srv := newFullServer(t, http.StatusNotFound)
+	root, productCard := publishDir(t)
+	dir := goreleaserDist(t, `{"version":"1.2.0"}`)
+	base := []string{"--product-file", productCard, "--version", "1.2.0", "--dry-run"}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"path", []string{"--root", root, "--exclude", "out/a.txt"}, `--exclude "out/a.txt" must be a name of the root directory, not a path`},
+		{"empty", []string{"--root", root, "--exclude", ""}, `--exclude "" must be a name of the root directory`},
+		{"pattern", []string{"--root", root, "--exclude-match", "[a"}, `--exclude-match "[a" is not a valid pattern`},
+		{"goreleaser dir", []string{"--goreleaser-dir", filepath.Join(dir, "dist"), "--exclude", "app.tar.gz"}, "cannot be used with a goreleaser build"},
+		{"goreleaser in root", []string{"--root", filepath.Join(dir, "dist"), "--exclude-match", "*.gz"}, "cannot be used with a goreleaser build"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := publish(t, srv.URL, append(slices.Clone(base), tc.args...)...)
+			if r.err == nil || !strings.Contains(r.err.Error(), tc.want) {
+				t.Errorf("err = %v\nwant  %s", r.err, tc.want)
+			}
+			if code := ExitCode(nil, r.err); code != 2 {
+				t.Errorf("exit code = %d, want 2", code)
+			}
+		})
+	}
+	if len(srv.sent()) != 0 {
+		t.Errorf("sent %v", srv.sent())
+	}
+}

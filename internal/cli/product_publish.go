@@ -64,8 +64,10 @@ type publishFlags struct {
 
 	// changelog is the CHANGELOG.md to send with the version.
 	changelog string
-	// excludes are the files of the root directory not to send (*.log, .DS_Store).
+	// excludes are the names of the files or sub directories of the root directory not to send.
 	excludes []string
+	// excludeMatch is a pattern of the names of the root directory not to send, such as *.log.
+	excludeMatch string
 	// parallel is the number of files sent at the same time.
 	parallel int
 	// noValidate skips the checks made before anything is sent.
@@ -195,11 +197,11 @@ A published version never changes: publishing it again fails with "already publi
 
 			validationCmd := newValidateCmd(cfg, p.Logger())
 
-			err := flags.validateFlags(pname, p.Logger(), ctx, validationCmd)
+			err := flags.validateFlags(p.Logger(), ctx, validationCmd)
 			if err != nil {
 				return err
 			}
-			if err := flags.postValidateFlags(p.Logger(), ctx, validationCmd); err != nil {
+			if err = flags.postValidateFlags(p.Logger(), ctx, validationCmd); err != nil {
 				return err
 			}
 
@@ -234,7 +236,8 @@ func setFlagSet(cmd *cobra.Command, pflags *publishFlags) {
 	flagSet.BoolVar(&pflags.isNotSemverStandard, "no-semver-standard", false, "Accept a version that is not X.Y.Z or X.Y.Z-pre, such as v1.2.0")
 	flagSet.BoolVar(&pflags.dryRun, "dry-run", false, "Show what would be sent, without sending anything (no token needed)")
 	flagSet.BoolVar(&pflags.noValidate, "no-validate", false, "Skip the checks of the product card and of artifacts.json")
-	flagSet.StringArrayVar(&pflags.excludes, "exclude", nil, "File of the root directory not to send, such as '*.log' (repeatable)")
+	flagSet.StringArrayVar(&pflags.excludes, "exclude", nil, "File or sub directory of the root directory not to send, by name, such as 'application.properties' (repeatable)")
+	flagSet.StringVar(&pflags.excludeMatch, "exclude-match", "", "Pattern of the files and sub directories of the root directory not to send, such as '*.log'")
 	flagSet.StringVar(&pflags.goReleaserArtifactsFile, "goreleaser-artifacts-file", "", "artifacts.json of a goreleaser build")
 	flagSet.StringVar(&pflags.goReleaserMetadataFile, "goreleaser-metadata-file", "", "metadata.json of a goreleaser build")
 	flagSet.StringVar(&pflags.goReleaserDir, "goreleaser-dir", "", "Directory of a goreleaser build (dist), with its artifacts.json and metadata.json")
@@ -310,13 +313,17 @@ func fileExists(what, path string) error {
 	return nil
 }
 
-func (f *publishFlags) validateFlags(pName string, logger *slog.Logger, ctx context.Context, vCmd *validateCmd) error {
+func (f *publishFlags) validateFlags(logger *slog.Logger, ctx context.Context, vCmd *validateCmd) error {
 	if f.ifExists != "" && f.ifExists != fail && f.ifExists != skip {
 		return config.Usage(fmt.Errorf("--if-exists must be fail or skip, not %q", f.ifExists))
 	}
 
 	if f.parallel < 1 {
 		return config.Usage(fmt.Errorf("--parallel must be 1 or more, not %d", f.parallel))
+	}
+
+	if err := f.validateExcludes(); err != nil {
+		return err
 	}
 
 	if f.noValidate {
@@ -697,6 +704,9 @@ func (p *publishCmd) processPublish(cmd *cobra.Command) (*summary, error) {
 	var files []string
 	var err error
 	if p.isGoReleaserBuilds() {
+		if p.pFlags.hasExcludes() {
+			return nil, config.Usage(errors.New("--exclude and --exclude-match cannot be used with a goreleaser build: its artifacts.json lists the files to send"))
+		}
 		var versions []string
 		files, versions, err = p.readFilesFromGoReleaser(root)
 		if err != nil {
@@ -828,6 +838,11 @@ func (p *publishCmd) readFilesFromRootDir(rootDir string) ([]string, error) {
 	var walkErrors []error
 
 	for _, entry := range entries {
+		if p.pFlags.excluded(entry.Name()) {
+			p.log.Info("file excluded", "file", entry.Name())
+			continue
+		}
+
 		// A hidden file (.env, .git, .DS_Store) may hold a secret: never sent.
 		if strings.HasPrefix(entry.Name(), ".") {
 			p.log.Info("hidden file skipped", "file", entry.Name())
@@ -973,4 +988,36 @@ func (p *publishCmd) normalizePath(rootDir, path string) (string, error) {
 		return "", err
 	}
 	return resolved.Path, nil
+}
+
+// validateExcludes checks --exclude, a name of the root directory, never a path, and the
+// pattern of --exclude-match.
+func (f *publishFlags) validateExcludes() error {
+	for _, name := range f.excludes {
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+			return config.Usage(fmt.Errorf("--exclude %q must be a name of the root directory, not a path", name))
+		}
+	}
+	if _, err := filepath.Match(f.excludeMatch, ""); err != nil {
+		return config.Usage(fmt.Errorf("--exclude-match %q is not a valid pattern: %w", f.excludeMatch, err))
+	}
+	return nil
+}
+
+// hasExcludes tells whether --exclude or --exclude-match is given.
+func (f *publishFlags) hasExcludes() bool {
+	return len(f.excludes) > 0 || f.excludeMatch != ""
+}
+
+// excluded tells whether the entry name of the root directory is excluded by --exclude or
+// --exclude-match.
+func (f *publishFlags) excluded(name string) bool {
+	if slices.Contains(f.excludes, name) {
+		return true
+	}
+	if f.excludeMatch == "" {
+		return false
+	}
+	matched, _ := filepath.Match(f.excludeMatch, name)
+	return matched
 }
