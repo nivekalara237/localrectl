@@ -311,6 +311,8 @@ Options:
 - `-R, --root DIR`: the folder of the files to send
 - `--goreleaser-dir DIR`: the goreleaser build folder (`dist`), with its `artifacts.json` and `metadata.json`
 - `--goreleaser-artifacts-file F`, `--goreleaser-metadata-file F`: the `artifacts.json` and `metadata.json` of a goreleaser build, given one by one
+- `--exclude NAME`: a file or subfolder of the root folder not to send, by name (repeatable)
+- `--exclude-match PATTERN`: a pattern of the files and subfolders of the root folder not to send, such as `'*.log'`
 - `--skip-subdirs`: skip the subfolders of the root folder
 - `--compress-subdirs`: send each subfolder as one archive; `--compress-type tar.gz|zip` (`tar.gz` by default)
 - `--latest`: also make this version the latest one

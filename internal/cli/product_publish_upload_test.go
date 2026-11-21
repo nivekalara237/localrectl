@@ -417,7 +417,7 @@ func TestNoValidateWarns(t *testing.T) {
 	f := publishFlags{noValidate: true, productFile: card, version: "1.2.0", parallel: 1, compressSubdirType: "tar.gz"}
 
 	// No server: the checks would fail to fetch the rules.
-	if err := f.validateFlags("billing", log, context.Background(), nil); err != nil {
+	if err := f.validateFlags(log, context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(errb.String(), "--no-validate") {
